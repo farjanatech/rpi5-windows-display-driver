@@ -10,7 +10,11 @@
 #include "../core/framebuffer.h"
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_LOG(...) DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_ERROR_LEVEL, "Rpi5Display: " __VA_ARGS__)
+#define RP_DRIVER_VERSION "0.1.1"
+VOID RpTraceInitialize(VOID);
+VOID RpTraceShutdown(VOID);
+VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
+#define RP_LOG(...) RpLog(__VA_ARGS__)
 typedef struct RP_ADAPTER {
     PDEVICE_OBJECT Pdo;
     DXGKRNL_INTERFACE Dxgk;

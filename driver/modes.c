@@ -27,11 +27,15 @@ static VOID RpSignal(RP_ADAPTER *a, D3DKMDT_VIDEO_SIGNAL_INFO *s)
 }
 static BOOLEAN RpSourceValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_SOURCE_MODE *m)
 {
+    size_t bytes;
     return m && m->Type == D3DKMDT_RMT_GRAPHICS &&
         m->Format.Graphics.PrimSurfSize.cx == a->Display.Width && m->Format.Graphics.PrimSurfSize.cy == a->Display.Height &&
         m->Format.Graphics.VisibleRegionSize.cx == a->Display.Width && m->Format.Graphics.VisibleRegionSize.cy == a->Display.Height &&
         (m->Format.Graphics.PixelFormat == D3DDDIFMT_A8R8G8B8 || m->Format.Graphics.PixelFormat == D3DDDIFMT_X8R8G8B8) &&
-        m->Format.Graphics.PixelValueAccessMode == D3DKMDT_PVAM_DIRECT;
+        m->Format.Graphics.PixelValueAccessMode == D3DKMDT_PVAM_DIRECT &&
+        (m->Format.Graphics.ColorBasis == D3DKMDT_CB_SCRGB || m->Format.Graphics.ColorBasis == D3DKMDT_CB_SRGB) &&
+        rp_layout(m->Format.Graphics.PrimSurfSize.cx, m->Format.Graphics.PrimSurfSize.cy,
+            m->Format.Graphics.Stride, &bytes);
 }
 static BOOLEAN RpTargetValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_TARGET_MODE *m)
 {
@@ -189,6 +193,7 @@ NTSTATUS APIENTRY RpEnumModes(CONST HANDLE context, CONST DXGKARG_ENUMVIDPNCOFUN
     }
     st = ti->pfnUpdatePathSupportInfo(top, &update);
 done:
+    RP_LOG("EnumModes result=0x%08lx\n", st);
     RpLeave(a); return st;
 }
 NTSTATUS APIENTRY RpCommit(CONST HANDLE context, CONST DXGKARG_COMMITVIDPN *p)
@@ -232,6 +237,7 @@ NTSTATUS APIENTRY RpCommit(CONST HANDLE context, CONST DXGKARG_COMMITVIDPN *p)
     vi->pfnReleaseTargetModeSet(p->hFunctionalVidPn, ts);
     if (NT_SUCCESS(st)) { a->Visible = TRUE; a->NeedFull = TRUE; }
 done:
+    RP_LOG("CommitVidPn result=0x%08lx visible=%u\n", st, a->Visible);
     RpLeave(a); return st;
 }
 NTSTATUS APIENTRY RpRecommendMonitor(CONST HANDLE context, CONST DXGKARG_RECOMMENDMONITORMODES *p)

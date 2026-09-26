@@ -50,23 +50,14 @@ if (!$RecoveryConfirmed -or !$DiagnosticsConfirmed -or !$PowerPolicyConfirmed -o
 $hibernate = Get-ItemPropertyValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name HibernateEnabled -ErrorAction Stop
 if ($hibernate -ne 0) { throw 'Hibernation must already be disabled. This script does not change power policy.' }
 if (!$PSCmdlet.ShouldProcess($DeviceInstanceId, 'Trust the pinned LAB certificate, enable this device and install the authenticated experimental package')) { return }
-$session = Join-Path (Join-Path $env:ProgramData 'Rpi5Display/Lab') ([guid]::NewGuid().ToString())
-New-Item $session -ItemType Directory -Force | Out-Null
-$acl = Get-Acl $session
-$acl.SetAccessRuleProtection($true,$false)
-foreach ($sid in @('S-1-5-18','S-1-5-32-544')) {
-    $rule = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),
-        'FullControl','ContainerInherit,ObjectInherit','None','Allow')
-    $acl.AddAccessRule($rule)
-}
-Set-Acl $session $acl
+$session = New-LabProtectedDirectory -Category Lab
 Copy-Item (Join-Path $ArtifactRoot 'package') $session -Recurse
 Copy-Item (Join-Path $ArtifactRoot 'manifest.json'),(Join-Path $ArtifactRoot 'manifest.p7s') $session
 $null = Test-LabManifest -ArtifactRoot $session -ExpectedCommit $ExpectedCommit -ExpectedThumbprint $ExpectedThumbprint
 $statePath = Join-Path $session 'install-state.json'
 $state = [ordered]@{DeviceInstanceId=$DeviceInstanceId; PreviousInf=$previousInf; Commit=$ExpectedCommit;
     Thumbprint=$ExpectedThumbprint; NewlyTrustedStores=@(); PreviousLabEnable=$null; Phase='Prepared';
-    PnpExitCode=$null; CurrentInf=$null; CurrentService=$null; ProblemCode=$null; LabGateEnabled=$false; HardwareValidated=$false}
+    StagedInf=$null; InstalledFileHash=$null; PnpExitCode=$null; CurrentInf=$null; CurrentService=$null; ProblemCode=$null; LabGateEnabled=$false; HardwareValidated=$false}
 function Save-State { $state | ConvertTo-Json -Depth 6 | Set-Content $statePath -Encoding utf8 }
 function Disable-LabGate {
     $key=[Rpi5Lab.Native]::OpenParameters($DeviceInstanceId,$true)
@@ -80,7 +71,7 @@ try {
     if ($previousInf -match '^oem[0-9]+\.inf$') {
         $backup = Join-Path $session 'previous-driver'
         New-Item $backup -ItemType Directory | Out-Null
-        & pnputil.exe /export-driver $previousInf $backup
+        & pnputil.exe /export-driver $previousInf $backup 2>&1 | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw 'Could not export the previous third-party package. Installation stopped.' }
     }
     foreach ($store in @('Root','TrustedPublisher')) {
@@ -105,25 +96,42 @@ try {
     } finally { $key.Dispose() }
     $state.Phase='Installation attempted'; Save-State
     $installationAttempted=$true
-    & pnputil.exe /add-driver (Join-Path $session 'package/Rpi5Display.inf') /install
+    & pnputil.exe /add-driver (Join-Path $session 'package/Rpi5Display.inf') /install 2>&1 | ForEach-Object { Write-Host $_ }
     $state.PnpExitCode=$LASTEXITCODE; Save-State
     if ($state.PnpExitCode -notin @(0,3010)) { throw "PnPUtil returned $($state.PnpExitCode). Follow the exact-package rollback runbook." }
     $current = Read-DeviceBinding
     $state.CurrentInf=$current.Inf; $state.CurrentService=$current.Service; $state.ProblemCode=$current.Problem
     $state.Phase='Package staged; binding/hardware must be checked'; Save-State
-    if ($state.CurrentService -ine 'Rpi5Display') {
-        # No latent opt-in if Windows retained another driver. A future test must opt in again.
+    $disposition=Get-LabInstallDisposition -PnpExitCode $state.PnpExitCode -Selected ($state.CurrentService -ieq 'Rpi5Display')
+    if ($disposition -eq 'RebootRequired') {
+        # Windows may still expose the previous binding until restart. Keep the deliberate
+        # opt-in for this pending install; clearing it here prevented the next start.
+        $state.Phase='Reboot required; binding and hardware not validated'; Save-State
+        Write-Warning 'Windows requests a restart. The explicit lab opt-in is retained. No automatic reboot; keep your recovery path ready.'
+    } elseif ($disposition -eq 'StagedOnly') {
         Disable-LabGate
         $state.Phase='Staged only; Windows retained another driver; lab gate cleared'; Save-State
-        Write-Warning 'Windows did not select this package. The lab gate has been cleared. Driver ranking is not bypassed and no successful deployment is claimed.'
+        Write-Warning 'Windows did not select this package. The lab gate is cleared. Staging is not installation.'
     } else {
-        Write-Host "Windows selected $($state.CurrentInf); PnP problem code=$($state.ProblemCode). Confirm the loaded module and presentation counters through the debugger."
-        if ($null -ne $state.ProblemCode -and $state.ProblemCode -ne 0 -and $state.PnpExitCode -ne 3010) {
-            throw 'The selected device reports a problem. Startup is not a success; use the recorded diagnostics and rollback procedure.'
+        $selected=Get-WindowsDriver -Online -Driver $state.CurrentInf -ErrorAction Stop
+        if ([IO.Path]::GetFileName($selected.OriginalFileName) -ine 'Rpi5Display.inf') {
+            throw 'Selected service belongs to an unexpected package.'
         }
+        $installed=Join-Path (Split-Path $selected.OriginalFileName -Parent) 'Rpi5Display.sys'
+        $state.InstalledFileHash=(Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+        if ($state.InstalledFileHash -ine $manifest.Sha256.'Rpi5Display.sys') {
+            throw 'Windows retained a different Rpi5Display binary. The requested package is not selected.'
+        }
+        if ($null -eq $state.ProblemCode -or $state.ProblemCode -ne 0) {
+            throw 'The selected device is not confirmed healthy. Use the recorded diagnostics and rollback.'
+        }
+        $state.StagedInf=$state.CurrentInf
+        $state.Phase='Exact on-disk package selected; physical output remains unverified'; Save-State
+        Write-Host "Selected package $($state.CurrentInf), problem code 0 and expected disk hash. Verify ETW present activity and the physical monitor separately."
     }
     Write-Host "Saved rollback state: $statePath"
     Write-Host 'No automatic reboot was requested. Keep recovery available; installation is not a hardware validation result.'
+    return [pscustomobject]$state
 } catch {
     $state.Phase="Failed: $($_.Exception.Message)"; Save-State
     # Do not automatically unload an active display driver. Preserve evidence and stop future starts.

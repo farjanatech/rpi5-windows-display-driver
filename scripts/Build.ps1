@@ -110,9 +110,16 @@ try {
         Test-LabManifest -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint | Out-Null
         & (Join-Path $Root 'tests/Package.Tests.ps1') -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint
     }
-    foreach ($helper in @('Lab-Common.ps1','Collect-Platform.ps1','Install-Lab.ps1','Remove-Lab.ps1')) {
+    foreach ($helper in @('Lab-Common.ps1','Collect-Platform.ps1','Install-Lab.ps1','Remove-Lab.ps1','Diagnostics.ps1','Run-Lab.ps1','Install.cmd','Preflight.cmd','Collect-Logs.cmd','Uninstall.cmd')) {
         Copy-Item (Join-Path $PSScriptRoot $helper) $Out -Force
     }
+    if ($TestSign) {
+        [ordered]@{Commit=$sourceCommit; Thumbprint=$cert.Thumbprint} | ConvertTo-Json |
+            Set-Content (Join-Path $Out 'Package-Pin.json') -Encoding utf8
+        & (Join-Path $Root 'tests/Installer.Tests.ps1') -ArtifactRoot $Out
+    }
+    Run 'git.exe' @('-C',$Root,'archive','--format=zip',"--output=$Out/source.zip",'HEAD')
+    Copy-Item (Join-Path $Root 'docs/CMD_INSTALLER.md') (Join-Path $Out 'READ-ME-FIRST.md') -Force
     Copy-Item (Join-Path $Root 'LICENSE'),(Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Out -Force
     "Original source and build scripts: https://github.com/farjanatech/rpi5-windows-display-driver/tree/$sourceCommit`nSource archive: https://github.com/farjanatech/rpi5-windows-display-driver/archive/$sourceCommit.zip`nExperimental lab package; NOT HARDWARE VALIDATED." |
         Set-Content (Join-Path $Out 'SOURCE.txt') -Encoding utf8

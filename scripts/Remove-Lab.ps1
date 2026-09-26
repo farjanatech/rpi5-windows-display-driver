@@ -21,8 +21,10 @@ if (!$PSCmdlet.ShouldProcess($DeviceInstanceId,"Clear the lab gate and uninstall
 Initialize-LabNative
 $key=[Rpi5Lab.Native]::OpenParameters($DeviceInstanceId,$true)
 try { $key.SetValue('LabEnable',0,[Microsoft.Win32.RegistryValueKind]::DWord) } finally { $key.Dispose() }
-& pnputil.exe /delete-driver $PublishedInf /uninstall
+& pnputil.exe /delete-driver $PublishedInf /uninstall 2>&1 | ForEach-Object { Write-Host $_ }
 $code=$LASTEXITCODE
 if ($code -notin @(0,3010)) { throw "PnPUtil returned $code. No force-delete or reboot was attempted; use the recovery runbook." }
 Write-Host 'Removal requested. Verify fallback-driver selection and follow any Windows restart requirement.'
 Write-Host 'No automatic reboot or certificate deletion was performed. Remove only the trust entries recorded as newly added in install-state.json after rollback is confirmed.'
+
+return [pscustomobject]@{ExitCode=$code; PublishedInf=$PublishedInf}

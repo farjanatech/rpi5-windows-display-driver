@@ -32,9 +32,12 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
     RP_RECT full;
     ULONG i;
     NTSTATUS result = STATUS_SUCCESS;
+    ULONGLONG begin = KeQueryInterruptTime();
     if (!p || p->VidPnSourceId != 0 || p->BytesPerPixel != 4 || p->Pitch <= 0 ||
         p->Flags.Rotate || p->NumMoves > RP_MAX_RECTS || p->NumDirtyRects > RP_MAX_RECTS ||
-        (p->NumMoves && !p->pMoves) || (p->NumDirtyRects && !p->pDirtyRect) || !p->pSource) return STATUS_INVALID_PARAMETER;
+        (p->NumMoves && !p->pMoves) || (p->NumDirtyRects && !p->pDirtyRect) || !p->pSource) {
+        RP_LOG("Present rejected invalid parameters\n"); return STATUS_INVALID_PARAMETER;
+    }
     if (!RpEnter(a)) return STATUS_DEVICE_NOT_READY;
     src.data = p->pSource; src.width = a->Display.Width; src.height = a->Display.Height; src.pitch = (ULONG)p->Pitch;
     if (!rp_layout(src.width, src.height, src.pitch, &src.size)) { RpLeave(a); return STATUS_INVALID_PARAMETER; }
@@ -60,9 +63,16 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
             for (i = 0; i < p->NumDirtyRects; ++i) RpFlush(a, RpRect(p->pDirtyRect[i]));
         }
         ++a->Presents;
-        if (a->Presents == 1 || (a->Presents & 1023) == 0) RP_LOG("present count=%llu\n", a->Presents);
+        if (a->Presents <= 8 || (a->Presents & 255) == 0)
+            RP_LOG("Present count=%llu moves=%lu dirty=%lu elapsedUs=%llu visible=%u\n",
+                a->Presents, p->NumMoves, p->NumDirtyRects,
+                (KeQueryInterruptTime() - begin) / 10, a->Visible);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         a->NeedFull = TRUE; result = GetExceptionCode();
+    }
+    if (!NT_SUCCESS(result)) {
+        a->NeedFull = TRUE; /* The next accepted present must repair shadow state. */
+        RP_LOG("Present failed status=0x%08lx moves=%lu dirty=%lu\n", result, p->NumMoves, p->NumDirtyRects);
     }
     RpLeave(a);
     return result;
