@@ -15,11 +15,16 @@ BOOLEAN RpPathValid(const D3DKMDT_VIDPN_PRESENT_PATH *p, BOOLEAN pinned)
 }
 static VOID RpSignal(RP_ADAPTER *a, D3DKMDT_VIDEO_SIGNAL_INFO *s)
 {
+    if (a->SignalFromEdid) {
+        *s = a->Signal;
+        return;
+    }
     RtlZeroMemory(s, sizeof(*s));
     s->VideoStandard = D3DKMDT_VSS_OTHER;
     s->ActiveSize.cx = s->TotalSize.cx = a->Display.Width;
     s->ActiveSize.cy = s->TotalSize.cy = a->Display.Height;
-    /* POST does not report timings. Do not invent a physical refresh rate. */
+    /* POST does not report timings. Without a validated matching EDID DTD,
+       preserve the 0.1.7 behavior rather than inventing a refresh rate. */
     s->VSyncFreq.Numerator = s->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
     s->HSyncFreq.Numerator = s->HSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
     s->PixelRate = D3DKMDT_FREQUENCY_NOTSPECIFIED;
