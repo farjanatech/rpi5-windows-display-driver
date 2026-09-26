@@ -2,13 +2,13 @@
 
 Experimental Windows-native ARM64 display-only miniport for Raspberry Pi 5 running Windows 11. The project contains driver source, test-signed CMD installer packages, runtime diagnostics and GitHub Actions validation.
 
-> **Current version: 0.1.2. Hardware validation remains pending.** Version 0.1.1 failed initialization on the test Pi because its registration table omitted a required callback. The omission is corrected; a successful new physical startup and desktop have not yet been recorded. Do not reinstall 0.1.1 or equate a green hosted build with a working display.
+> **Current development candidate: 0.1.8. Known-good hardware baseline: 0.1.7.** The 0.1.7 framebuffer/display-only path has reached a working Windows desktop on the Raspberry Pi 5. Version 0.1.8 keeps that present path and adds validated firmware timing/EDID metadata; its physical timing/EDID result is the next hardware gate. Do not equate a green hosted build with a passed Pi test.
 
-## 0.1.2 correction
+## 0.1.8 timing/EDID handoff
 
-The missing entry was `DxgkDdiDispatchIoRequest`. A Microsoft-signed ARM64 graphics-kernel reference returns `STATUS_REVISION_MISMATCH` for that NULL entry even though the existing interface version is accepted. The new callback rejects unsupported legacy requests without accessing their payloads. The existing KMDOD ABI is retained; this is **not** a GPU-acceleration or WDDM-feature upgrade.
+The driver consumes a versioned volatile UEFI runtime handoff from the paired exp0.7 firmware candidate. It validates the firmware variable attributes, exact POST geometry, progressive timing, pixel clock/totals and complete EDID chain. Valid data is returned through `DxgkDdiQueryDeviceDescriptor` and used for VidPN signal timing; missing/invalid data falls back to the hardware-working 0.1.7 unspecified-timing behavior.
 
-See [root cause, reference identity and regression checks](docs/REGISTRATION_FIX_0.1.2.md). Startup traces now include interface/table/OS details, and support reports include Windows graphics-file versions/hashes. Preflight also checks hibernation before reporting success and handles absent driver properties more clearly.
+No 60 Hz value is hard-coded. No HVS/V3D/HDMI register programming, hardware acceleration, new mode or interrupt-driven VSync path is added. The paired firmware work is tracked in `farjanatech/rpi5-uefi#9`; this driver candidate is PR #7.
 
 ## Build and use
 
@@ -27,12 +27,12 @@ Full instructions: [CMD installer and log collection](docs/CMD_INSTALLER.md), [l
 | Area | Current implementation / limitation |
 | --- | --- |
 | Device | Exact `ACPI\BCM2712` match; actual firmware resource ownership must be verified |
-| Display | One logical HDMI target, existing firmware boot mode, 32-bit framebuffer |
+| Display | One logical firmware-selected target, existing boot mode, 32-bit framebuffer; validated timing/EDID from exp0.7 when available |
 | Presentation | Synchronous checked shadow copies, overlapping moves, dirty updates, software cursor |
 | Lifecycle | Startup, stop/cleanup, visibility, software blanking, diagnostic-display callbacks |
 | Diagnostics | Kernel TraceLogging plus before/after Windows/device/setup/driver records and support ZIPs |
 | Safety controls | Explicit per-device LabEnable gate, bounds checks, no guessed physical addresses or arbitrary-memory IOCTL |
-| Not implemented | Native HVS/HDMI mode setting, hardware cursor, real VSync, multiple outputs, physical suspend/resume, V3D or Direct3D hardware acceleration |
+| Not implemented | Native HVS/HDMI mode setting, hardware cursor, interrupt-driven VSync synchronization, multiple outputs, physical suspend/resume, V3D or Direct3D hardware acceleration |
 
 ## Roadmap and evidence
 
@@ -42,8 +42,8 @@ The [original M0-M7 roadmap](docs/ROADMAP.md) is preserved. Its documentation-on
 | --- | --- |
 | M0/M0A scope and audit | Initial original-code approach established; future imported hardware code still needs per-file/transitive review |
 | M1 platform/recovery contract | User baseline and failed-install/uninstall evidence exist; complete firmware framebuffer lifetime/cache and recovery qualification remains open |
-| M2 build/registration | Build/package pipeline exists; 0.1.1 runtime initialization failed; 0.1.2 corrects the identified callback omission and needs a physical retest |
-| M3 first desktop | Presentation code exists; correctly updating physical output through this driver is not yet established |
+| M2 build/registration | Build/package pipeline exists; registration/lifecycle fixes through 0.1.7 have been exercised on the physical Pi |
+| M3 first desktop | 0.1.7 has produced a working firmware-framebuffer Windows desktop; 0.1.8 timing/EDID reporting is the current hardware gate |
 | M4 native display | Separate incremental hardware work, gated on the firmware-framebuffer baseline |
 | M5 reliability/power | Verifier, repeated boot, stress, lifecycle and supported power transitions require actual tests |
 | M6 release | Lab packaging exists; production signing and release qualification remain pending |
