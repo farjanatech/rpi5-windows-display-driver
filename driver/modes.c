@@ -139,6 +139,15 @@ NTSTATUS APIENTRY RpIsSupported(CONST HANDLE context, DXGKARG_ISSUPPORTEDVIDPN *
             if (NT_SUCCESS(st)) {
                 p->IsVidPnSupported = RpPathValid(path, FALSE);
                 ti->pfnReleasePathInfo(top, path);
+                if (p->IsVidPnSupported) {
+                    /* pivot=TRUE validates a pin without replacing an unpinned set. */
+                    st = RpSourceSet(a, p->hDesiredVidPn, vi, TRUE);
+                    if (NT_SUCCESS(st)) st = RpTargetSet(a, p->hDesiredVidPn, vi, TRUE);
+                    if (st == STATUS_GRAPHICS_INVALID_VIDPN_SOURCEMODESET ||
+                        st == STATUS_GRAPHICS_INVALID_VIDPN_TARGETMODESET) {
+                        p->IsVidPnSupported = FALSE; st = STATUS_SUCCESS;
+                    }
+                }
             }
         }
     }
@@ -261,7 +270,7 @@ NTSTATUS APIENTRY RpUpdatePath(CONST HANDLE context, CONST DXGKARG_UPDATEACTIVEV
 NTSTATUS APIENTRY RpQueryVidPnCaps(CONST HANDLE context, DXGKARG_QUERYVIDPNHWCAPABILITY *p)
 {
     UNREFERENCED_PARAMETER(context);
-    if (!p || p->VidPnSourceId || p->VidPnTargetId) return STATUS_INVALID_PARAMETER;
+    if (!p || p->SourceId || p->TargetId) return STATUS_INVALID_PARAMETER;
     RtlZeroMemory(&p->VidPnHWCaps, sizeof(p->VidPnHWCaps));
     return STATUS_SUCCESS;
 }

@@ -10,14 +10,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize MSVC ARM64 tools.' }
 foreach ($line in $envLines) { if ($line -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
 if ($env:VSCMD_ARG_TGT_ARCH -ne 'arm64') { throw 'Wrong compiler target architecture.' }
 $km = Split-Path (Find-One $Wdk 'ntddk.h')
+$wdkShared = Split-Path (Find-One $Wdk 'd3dkmddi.h')
 $shared = Split-Path (Find-One $Sdk 'ntdef.h')
 $um = Split-Path (Find-One $Sdk 'Windows.h')
 $ucrt = Split-Path (Find-One $Sdk 'corecrt.h')
 $libs = Split-Path (Find-One $Wdk 'ntoskrnl.lib' '[\\/]arm64[\\/]')
-# /kernel defines _KERNEL_MODE itself. Do not redefine reserved compiler macros.
-$compile = @('/nologo','/c','/TC','/std:c11','/kernel','/W4','/WX','/Zl','/GS','/guard:cf','/Z7',
+# /kernel defines _KERNEL_MODE itself. Pin WDK shared headers before SDK shared headers.
+# /X prevents silently falling back to the runner's unrelated installed Windows Kit.
+$vcInclude = Join-Path $env:VCToolsInstallDir 'include'
+$compile = @('/nologo','/c','/TC','/std:c11','/kernel','/W4','/WX','/Zl','/GS','/guard:cf','/Z7','/X',
     '/D_ARM64_','/D_WIN32_WINNT=0x0A00','/DWINVER=0x0A00','/DNTDDI_VERSION=0x0A000008',
-    '/DDXGKDDI_INTERFACE_VERSION=0x300E',"/I$km","/I$km/crt","/I$shared","/I$um","/I$ucrt")
+    '/DDXGKDDI_INTERFACE_VERSION=0x300E',"/I$km","/I$km/crt","/I$wdkShared","/I$shared","/I$um","/I$ucrt","/I$vcInclude")
 if ($Configuration -eq 'Debug') { $compile += '/Od'; $compile += '/DDBG=1' } else { $compile += '/O2' }
 $objects = @(); $failed = @()
 foreach ($file in Get-ChildItem (Join-Path $Root 'driver') -Filter *.c) {
