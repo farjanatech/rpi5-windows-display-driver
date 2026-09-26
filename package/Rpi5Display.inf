@@ -1,0 +1,53 @@
+; SPDX-License-Identifier: GPL-3.0-only
+; EXPERIMENTAL lab-only package. No generic/root-enumerated display match.
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=09/26/2026,0.1.0.0
+CatalogFile=Rpi5Display.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTarm64.10.0...22000
+
+[Models.NTarm64.10.0...22000]
+%Device%=Rpi5Display_Install,ACPI\BCM2712
+
+[Rpi5Display_Install.NT]
+CopyFiles=DriverCopy
+FeatureScore=F8
+
+[Rpi5Display_Install.NT.HW]
+AddReg=LabGate
+
+[LabGate]
+; REG_DWORD | NOCLOBBER. Absent opt-in leaves StartDevice blocked.
+HKR,,LabEnable,0x00010003,0
+
+[Rpi5Display_Install.NT.Services]
+AddService=Rpi5Display,0x00000002,Rpi5Display_Service
+
+[Rpi5Display_Service]
+DisplayName=%Service%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\Rpi5Display.sys
+LoadOrderGroup=Video
+
+[DestinationDirs]
+DriverCopy=13
+[DriverCopy]
+Rpi5Display.sys
+[SourceDisksNames]
+1=%Disk%
+[SourceDisksFiles]
+Rpi5Display.sys=1
+
+[Strings]
+Provider="farjanatech"
+Device="Raspberry Pi 5 Firmware Display (EXPERIMENTAL)"
+Service="Rpi5Display experimental display-only miniport"
+Disk="Rpi5Display lab package"
