@@ -34,6 +34,12 @@ typedef enum RP_START_STAGE {
     RpStartCompleted = 8
 } RP_START_STAGE;
 
+static GUID gRpEdidGuid = {
+    0x6cb2e539, 0x02b5, 0x4c3d, {0xa7,0x6a,0x15,0x77,0x3a,0x4e,0xa7,0x41}
+};
+#define RP_EFI_VARIABLE_NON_VOLATILE 0x00000001u
+#define RP_EFI_VARIABLE_RUNTIME_ACCESS 0x00000004u
+
 static VOID RpWriteStartDword(HANDLE key, PCWSTR valueName, ULONG value)
 {
     UNICODE_STRING name;
@@ -64,6 +70,85 @@ static VOID RpRecordStartState(RP_ADAPTER *a, RP_START_STAGE stage, NTSTATUS sta
         RpWriteStartDword(key, L"Rpi5DisplayPostPhysHigh", (ULONG)display->PhysicAddress.HighPart);
     }
     ZwClose(key);
+}
+
+static NTSTATUS RpLoadFirmwareEdid(RP_ADAPTER *a)
+{
+    UNICODE_STRING name = RTL_CONSTANT_STRING(L"Rpi5DisplayEdid");
+    ULONG length, attributes = 0;
+    NTSTATUS st;
+    if (!a) return STATUS_INVALID_PARAMETER;
+    RtlZeroMemory(a->Edid, sizeof(a->Edid));
+    a->EdidBytes = 0;
+    a->EdidValid = FALSE;
+    a->SignalFromEdid = FALSE;
+    RtlZeroMemory(&a->Signal, sizeof(a->Signal));
+
+    length = sizeof(a->Edid);
+    st = ExGetFirmwareEnvironmentVariable(&name, &gRpEdidGuid, a->Edid, &length, &attributes);
+    if (!NT_SUCCESS(st)) {
+        RP_LOG("firmware EDID handoff unavailable status=0x%08lx\n", st);
+        return st;
+    }
+    if (!(attributes & RP_EFI_VARIABLE_RUNTIME_ACCESS) ||
+        (attributes & RP_EFI_VARIABLE_NON_VOLATILE) ||
+        !rp_edid_valid(a->Edid, length)) {
+        RP_LOG("firmware EDID handoff rejected bytes=%lu attributes=0x%08lx\n",
+            length, attributes);
+        RtlZeroMemory(a->Edid, sizeof(a->Edid));
+        return STATUS_INVALID_PARAMETER;
+    }
+    a->EdidBytes = length;
+    a->EdidValid = TRUE;
+    RP_LOG("firmware EDID handoff accepted bytes=%lu blocks=%lu attributes=0x%08lx\n",
+        length, length / RP_EDID_BLOCK_SIZE, attributes);
+    return STATUS_SUCCESS;
+}
+
+static VOID RpResolveEdidSignal(RP_ADAPTER *a)
+{
+    RP_EDID_TIMING timing;
+    ULONGLONG denom, refreshMilliHz;
+    HANDLE key;
+    if (!a) return;
+    a->SignalFromEdid = FALSE;
+    RtlZeroMemory(&a->Signal, sizeof(a->Signal));
+    if (!a->EdidValid ||
+        !rp_edid_match_timing(a->Edid, a->EdidBytes, a->Display.Width, a->Display.Height, &timing)) {
+        RP_LOG("EDID contains no progressive detailed timing matching POST %lux%lu; timing remains unspecified\n",
+            a->Display.Width, a->Display.Height);
+        return;
+    }
+
+    denom = (ULONGLONG)timing.total_width * timing.total_height;
+    if (!denom || denom > MAXULONG) return;
+    a->Signal.VideoStandard = D3DKMDT_VSS_OTHER;
+    a->Signal.TotalSize.cx = timing.total_width;
+    a->Signal.TotalSize.cy = timing.total_height;
+    a->Signal.ActiveSize.cx = timing.active_width;
+    a->Signal.ActiveSize.cy = timing.active_height;
+    a->Signal.VSyncFreq.Numerator = timing.pixel_rate_hz;
+    a->Signal.VSyncFreq.Denominator = (UINT)denom;
+    a->Signal.HSyncFreq.Numerator = timing.pixel_rate_hz;
+    a->Signal.HSyncFreq.Denominator = timing.total_width;
+    a->Signal.PixelRate = (SIZE_T)timing.pixel_rate_hz;
+    a->Signal.ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
+    a->SignalFromEdid = TRUE;
+    refreshMilliHz = ((ULONGLONG)timing.pixel_rate_hz * 1000u) / denom;
+    RP_LOG("EDID timing matched block=%lu offset=%lu active=%lux%lu total=%lux%lu pixel=%lu refresh=%llu.%03lluHz\n",
+        timing.block_index, timing.descriptor_offset, timing.active_width, timing.active_height,
+        timing.total_width, timing.total_height, timing.pixel_rate_hz,
+        refreshMilliHz / 1000u, refreshMilliHz % 1000u);
+
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        RpWriteStartDword(key, L"Rpi5DisplayEdidBytes", a->EdidBytes);
+        RpWriteStartDword(key, L"Rpi5DisplayTimingFromEdid", 1);
+        RpWriteStartDword(key, L"Rpi5DisplayRefreshMilliHz", (ULONG)min(refreshMilliHz, (ULONGLONG)MAXULONG));
+        RpWriteStartDword(key, L"Rpi5DisplayPixelRateHz", timing.pixel_rate_hz);
+        RpWriteStartDword(key, L"Rpi5DisplayHTotal", timing.total_width);
+        RpWriteStartDword(key, L"Rpi5DisplayVTotal", timing.total_height);
+        ZwClose(key);
+    }
 }
 
 BOOLEAN RpEnter(RP_ADAPTER *a)
@@ -217,6 +302,9 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     }
     RpRecordStartState(a, RpStartDeviceInfo, STATUS_SUCCESS, NULL, 0);
     RP_LOG("Windows resources received; translated list present=%u\n", device.TranslatedResourceList != NULL);
+    /* EDID metadata is optional. Never fail the proven framebuffer path when
+       the exp0.7 handoff variable is absent, invalid or from older firmware. */
+    (VOID)RpLoadFirmwareEdid(a);
     RtlZeroMemory(&a->Display, sizeof(a->Display));
     /* Match Microsoft's KMDOD handoff contract exactly: boot-time TargetId may
        legitimately remain D3DDDI_ID_UNINITIALIZED. */
@@ -241,6 +329,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
     RpRecordStartState(a, RpStartPostValidated, STATUS_SUCCESS, &a->Display, 0);
+    RpResolveEdidSignal(a);
     /* Map only the OS-owned POST framebuffer. Match Microsoft's KMDOD sample:
        prefer write-combining, then retry non-cached if the platform rejects WC. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
@@ -382,11 +471,26 @@ NTSTATUS NTAPI RpChildStatus(PVOID context, PDXGK_CHILD_STATUS status, BOOLEAN n
 }
 NTSTATUS NTAPI RpDescriptor(PVOID context, ULONG uid, PDXGK_DEVICE_DESCRIPTOR desc)
 {
-    UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(desc);
-    RP_LOG("QueryDeviceDescriptor uid=%lu; EDID is not supplied by this prototype\n", uid);
-    /* Match Microsoft's KMDOD no-EDID contract. MONITOR_NO_DESCRIPTOR is used
-       only after a descriptor source exists but has no more blocks. */
-    return uid == 0 ? STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED : STATUS_INVALID_PARAMETER;
+    RP_ADAPTER *a = context;
+    ULONG remaining, copyBytes;
+    if (!a || !desc || uid != 0) return STATUS_INVALID_PARAMETER;
+    if (!a->EdidValid) {
+        RP_LOG("QueryDeviceDescriptor uid=0; no validated firmware EDID, preserving 0.1.7 fallback\n");
+        return STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
+    }
+    if (!desc->DescriptorBuffer || !desc->DescriptorLength) return STATUS_INVALID_PARAMETER;
+    if (desc->DescriptorOffset >= a->EdidBytes) {
+        RP_LOG("QueryDeviceDescriptor offset=%lu beyond EDID bytes=%lu\n",
+            desc->DescriptorOffset, a->EdidBytes);
+        return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+    }
+    remaining = a->EdidBytes - desc->DescriptorOffset;
+    copyBytes = min(desc->DescriptorLength, remaining);
+    RtlZeroMemory(desc->DescriptorBuffer, desc->DescriptorLength);
+    RtlCopyMemory(desc->DescriptorBuffer, a->Edid + desc->DescriptorOffset, copyBytes);
+    RP_LOG("QueryDeviceDescriptor EDID offset=%lu requested=%lu returned=%lu total=%lu\n",
+        desc->DescriptorOffset, desc->DescriptorLength, copyBytes, a->EdidBytes);
+    return STATUS_SUCCESS;
 }
 NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *info)
 {
