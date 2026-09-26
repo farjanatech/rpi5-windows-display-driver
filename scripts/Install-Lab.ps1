@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Defaults to read-only preflight. Explicit -Install AND confirmation are required for changes.
+# Read-only preflight by default. Explicit -Install AND confirmation are required.
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param(
     [Parameter(Mandatory)][string]$ArtifactRoot,
@@ -15,14 +15,30 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'Lab-Common.ps1')
+function Read-DeviceBinding {
+    # Enumerate successfully first; an unbound device can legitimately lack an INF/service
+    # property. Access/enumeration errors still stop the operation instead of being hidden.
+    $properties = @(Get-PnpDeviceProperty -InstanceId $DeviceInstanceId -ErrorAction Stop)
+    $binding = @{Inf=$null; Service=$null; Problem=$null}
+    foreach ($property in $properties) {
+        switch ($property.KeyName) {
+            'DEVPKEY_Device_DriverInfPath' { $binding.Inf=$property.Data }
+            'DEVPKEY_Device_Service' { $binding.Service=$property.Data }
+            'DEVPKEY_Device_ProblemCode' { $binding.Problem=$property.Data }
+        }
+    }
+    return $binding
+}
 $manifest = Test-LabManifest -ArtifactRoot $ArtifactRoot -ExpectedCommit $ExpectedCommit -ExpectedThumbprint $ExpectedThumbprint
 $device = Assert-LabTarget -DeviceInstanceId $DeviceInstanceId
 Initialize-LabNative
 $ci = [Rpi5Lab.Native]::CodeIntegrity()
 if (($ci -band 2) -eq 0) { throw 'The currently booted Windows kernel does not allow test signing. Follow the lab runbook; this script does not change security settings.' }
-$previousInf = (Get-PnpDeviceProperty -InstanceId $DeviceInstanceId -KeyName DEVPKEY_Device_DriverInfPath -ErrorAction Stop).Data
-Write-Host "Target: $($device.InstanceId); current driver INF: $previousInf; Code Integrity options: $ci"
-Write-Warning 'Experimental display-only code. Sleep/resume, native mode setting and acceleration are not supported or hardware-validated.'
+$previous = Read-DeviceBinding
+$previousInf = $previous.Inf
+Write-Host "Target: $($device.InstanceId); previous INF: $previousInf; Code Integrity options: $ci"
+if (!$previousInf) { Write-Warning 'The target is currently unbound. Verify its boot-display association and recovery route before installation.' }
+Write-Warning 'Experimental display-only code. Physical sleep/resume, native mode setting and acceleration are not supported or hardware-validated.'
 if (!$Install) {
     Write-Host 'PREFLIGHT ONLY: no driver, trust, registry, power or boot settings changed.'
     return
@@ -32,7 +48,7 @@ if (!$RecoveryConfirmed -or !$DiagnosticsConfirmed -or !$PowerPolicyConfirmed -o
     throw 'Confirm the restored-image/recovery route, independent diagnostics, disabled sleep/hibernate policy and untested-hardware risk explicitly. See docs/LAB_INSTALL.md.'
 }
 $hibernate = Get-ItemPropertyValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name HibernateEnabled -ErrorAction Stop
-if ($hibernate -ne 0) { throw 'Hibernation must already be disabled for this experiment. No power-policy changes are made by this script.' }
+if ($hibernate -ne 0) { throw 'Hibernation must already be disabled. This script does not change power policy.' }
 if (!$PSCmdlet.ShouldProcess($DeviceInstanceId, 'Trust the pinned LAB certificate, enable this device and install the authenticated experimental package')) { return }
 $session = Join-Path (Join-Path $env:ProgramData 'Rpi5Display/Lab') ([guid]::NewGuid().ToString())
 New-Item $session -ItemType Directory -Force | Out-Null
@@ -50,8 +66,14 @@ $null = Test-LabManifest -ArtifactRoot $session -ExpectedCommit $ExpectedCommit 
 $statePath = Join-Path $session 'install-state.json'
 $state = [ordered]@{DeviceInstanceId=$DeviceInstanceId; PreviousInf=$previousInf; Commit=$ExpectedCommit;
     Thumbprint=$ExpectedThumbprint; NewlyTrustedStores=@(); PreviousLabEnable=$null; Phase='Prepared';
-    PnpExitCode=$null; CurrentInf=$null; CurrentService=$null; HardwareValidated=$false}
+    PnpExitCode=$null; CurrentInf=$null; CurrentService=$null; ProblemCode=$null; LabGateEnabled=$false; HardwareValidated=$false}
 function Save-State { $state | ConvertTo-Json -Depth 6 | Set-Content $statePath -Encoding utf8 }
+function Disable-LabGate {
+    $key=[Rpi5Lab.Native]::OpenParameters($DeviceInstanceId,$true)
+    try { $key.SetValue('LabEnable',0,[Microsoft.Win32.RegistryValueKind]::DWord) } finally { $key.Dispose() }
+    $state.LabGateEnabled=$false
+    Save-State
+}
 $gateChanged = $false; $installationAttempted = $false
 Save-State
 try {
@@ -79,32 +101,34 @@ try {
         if ($null -ne $state.PreviousLabEnable -and $key.GetValueKind('LabEnable') -ne 'DWord') { throw 'Unexpected existing LabEnable value type.' }
         Save-State
         $key.SetValue('LabEnable',1,[Microsoft.Win32.RegistryValueKind]::DWord)
-        $gateChanged = $true
+        $gateChanged = $true; $state.LabGateEnabled=$true
     } finally { $key.Dispose() }
     $state.Phase='Installation attempted'; Save-State
     $installationAttempted=$true
     & pnputil.exe /add-driver (Join-Path $session 'package/Rpi5Display.inf') /install
     $state.PnpExitCode=$LASTEXITCODE; Save-State
     if ($state.PnpExitCode -notin @(0,3010)) { throw "PnPUtil returned $($state.PnpExitCode). Follow the exact-package rollback runbook." }
-    $state.CurrentInf = (Get-PnpDeviceProperty -InstanceId $DeviceInstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
-    $state.CurrentService = (Get-PnpDeviceProperty -InstanceId $DeviceInstanceId -KeyName DEVPKEY_Device_Service).Data
-    $problem = (Get-PnpDeviceProperty -InstanceId $DeviceInstanceId -KeyName DEVPKEY_Device_ProblemCode).Data
+    $current = Read-DeviceBinding
+    $state.CurrentInf=$current.Inf; $state.CurrentService=$current.Service; $state.ProblemCode=$current.Problem
     $state.Phase='Package staged; binding/hardware must be checked'; Save-State
     if ($state.CurrentService -ine 'Rpi5Display') {
-        Write-Warning 'Windows did not select this package. Driver ranking is not bypassed. No successful deployment is claimed.'
+        # No latent opt-in if Windows retained another driver. A future test must opt in again.
+        Disable-LabGate
+        $state.Phase='Staged only; Windows retained another driver; lab gate cleared'; Save-State
+        Write-Warning 'Windows did not select this package. The lab gate has been cleared. Driver ranking is not bypassed and no successful deployment is claimed.'
     } else {
-        Write-Host "Windows selected $($state.CurrentInf); PnP problem code=$problem. Confirm the loaded module and presentation counters through the debugger."
+        Write-Host "Windows selected $($state.CurrentInf); PnP problem code=$($state.ProblemCode). Confirm the loaded module and presentation counters through the debugger."
+        if ($null -ne $state.ProblemCode -and $state.ProblemCode -ne 0 -and $state.PnpExitCode -ne 3010) {
+            throw 'The selected device reports a problem. Startup is not a success; use the recorded diagnostics and rollback procedure.'
+        }
     }
     Write-Host "Saved rollback state: $statePath"
-    Write-Host 'No automatic reboot was requested. Keep the recovery channel open; installation is not a hardware validation result.'
+    Write-Host 'No automatic reboot was requested. Keep recovery available; installation is not a hardware validation result.'
 } catch {
     $state.Phase="Failed: $($_.Exception.Message)"; Save-State
-    # Do not automatically unload a currently active display driver. Preserve evidence and stop future starts.
+    # Do not automatically unload an active display driver. Preserve evidence and stop future starts.
     if ($gateChanged) {
-        try {
-            $key=[Rpi5Lab.Native]::OpenParameters($DeviceInstanceId,$true)
-            try { $key.SetValue('LabEnable',0,[Microsoft.Win32.RegistryValueKind]::DWord) } finally { $key.Dispose() }
-        } catch { Write-Warning 'Could not clear the lab gate. Use the recovery runbook.' }
+        try { Disable-LabGate } catch { Write-Warning 'Could not clear the lab gate. Use the recovery runbook.' }
     }
     if (!$installationAttempted) {
         foreach ($store in $state.NewlyTrustedStores) { Remove-Item "Cert:\LocalMachine\$store\$ExpectedThumbprint" -ErrorAction SilentlyContinue }
