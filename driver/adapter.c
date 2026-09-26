@@ -139,17 +139,19 @@ static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
     a->FirmwareVariableAttributes = 0;
 
     st = ExGetFirmwareEnvironmentVariable(&name, &handoffGuid, &a->FirmwareDisplay, &bytes, &attributes);
+    if (NT_SUCCESS(st)) a->FirmwareVariableAttributes = attributes;
     if (!NT_SUCCESS(st)) {
         RP_LOG("firmware display handoff unavailable status=0x%08lx; using unspecified timing fallback\n", st);
-    } else if (bytes != sizeof(a->FirmwareDisplay) ||
+    } else if (!rp_display_handoff_attributes_valid(attributes) ||
+               bytes != sizeof(a->FirmwareDisplay) ||
                !rp_display_handoff_valid(&a->FirmwareDisplay, a->Display.Width, a->Display.Height)) {
-        RP_LOG("firmware display handoff rejected bytes=%lu signature=0x%08lx version=%u flags=0x%08lx\n",
-            bytes, a->FirmwareDisplay.signature, a->FirmwareDisplay.version, a->FirmwareDisplay.flags);
+        RP_LOG("firmware display handoff rejected bytes=%lu signature=0x%08lx version=%u flags=0x%08lx attrs=0x%08lx\n",
+            bytes, a->FirmwareDisplay.signature, a->FirmwareDisplay.version,
+            a->FirmwareDisplay.flags, attributes);
         RtlZeroMemory(&a->FirmwareDisplay, sizeof(a->FirmwareDisplay));
     } else {
         a->FirmwareTimingValid = TRUE;
         a->FirmwareEdidValid = (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
-        a->FirmwareVariableAttributes = attributes;
         RP_LOG("firmware display handoff accepted display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
             a->FirmwareDisplay.display_number, a->FirmwareDisplay.timing.clock_khz,
             a->FirmwareDisplay.timing.htotal, a->FirmwareDisplay.timing.vtotal,
