@@ -9,6 +9,7 @@
 #pragma warning(pop)
 #include "../core/framebuffer.h"
 #include "../core/display_handoff.h"
+#include "../core/vsync_timing.h"
 #include "../core/registration_contract.h"
 /* Pin the existing, accepted KMDOD ABI; the fix is not a WDDM upgrade. */
 C_ASSERT(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8);
@@ -16,7 +17,7 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.8"
+#define RP_DRIVER_VERSION "0.1.9-hzfix"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
@@ -29,6 +30,16 @@ typedef struct RP_ADAPTER {
     BOOLEAN FirmwareTimingValid;
     BOOLEAN FirmwareEdidValid;
     ULONG FirmwareVariableAttributes;
+    BOOLEAN VSyncAdvertised;
+    BOOLEAN VSyncHardwareReady;
+    ULONG PixelValveIndex;
+    PVOID PixelValveRegs;
+    SIZE_T PixelValveBytes;
+    volatile LONG VSyncInterruptEnabled;
+    volatile LONG64 LastVSyncQpc;
+    LONG64 QpcFrequency;
+    volatile LONG64 VSyncCount;
+    volatile LONG64 ScanLineQueries;
     PVOID Framebuffer;
     SIZE_T FramebufferBytes;
     RP_SURFACE Shadow;
@@ -45,6 +56,11 @@ BOOLEAN RpEnter(RP_ADAPTER *a);
 VOID RpLeave(RP_ADAPTER *a);
 VOID RpFlush(RP_ADAPTER *a, RP_RECT rect);
 VOID RpBlank(RP_ADAPTER *a);
+BOOLEAN RpVSyncRegistrationAvailable(VOID);
+NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources);
+VOID RpVSyncShutdown(RP_ADAPTER *a);
+DXGKDDI_CONTROLINTERRUPT RpControlInterrupt;
+DXGKDDI_GETSCANLINE RpGetScanLine;
 BOOLEAN RpPathValid(const D3DKMDT_VIDPN_PRESENT_PATH *path, BOOLEAN pinned);
 DXGKDDI_ISSUPPORTEDVIDPN RpIsSupported;
 DXGKDDI_ENUMVIDPNCOFUNCMODALITY RpEnumModes;
