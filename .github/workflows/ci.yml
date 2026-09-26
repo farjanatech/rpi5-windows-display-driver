@@ -22,6 +22,13 @@ jobs:
           mkdir -p out
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/framebuffer_test.c -o out/framebuffer_test
           ./out/framebuffer_test
+      - name: Archive the exact reviewed source
+        run: git archive --format=zip --output=out/source.zip HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reviewed-source-${{ github.event.pull_request.head.sha || github.sha }}
+          path: out/source.zip
+          retention-days: 14
   arm64-build:
     runs-on: windows-2022
     timeout-minutes: 20
