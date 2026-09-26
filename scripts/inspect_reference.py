@@ -31,8 +31,8 @@ for name in ('dxgkrnl.sys','basicdisplay.sys'):
     target=work/name;target.write_bytes(binary)
     # Symbol server can return a differently signed copy with the same image identity.
     # Do not treat index hash as equivalent: require an actual Microsoft Authenticode chain.
-    check="$s=Get-AuthenticodeSignature '"+str(target)+"';$s|Format-List|Out-String|Write-Host;if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notlike '*Microsoft*'){exit 1}"
-    verified=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',check],capture_output=True,text=True,timeout=90)
+    check="$ErrorActionPreference='Stop';$s=Get-AuthenticodeSignature '"+str(target.resolve())+"';$s|Format-List|Out-String|Write-Host;if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notlike '*Microsoft*'){exit 1}"
+    verified=subprocess.run(['pwsh.exe','-NoProfile','-NonInteractive','-Command',check],capture_output=True,text=True,timeout=90)
     (out/(name+'.signature.txt')).write_text(verified.stdout+verified.stderr)
     if verified.returncode: raise RuntimeError('Microsoft signature verification failed')
     sections=[]
