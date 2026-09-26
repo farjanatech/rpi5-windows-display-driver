@@ -8,7 +8,6 @@ $Tools = Join-Path $Root '.tools'
 $Out = Join-Path $Root "out/ARM64/$Configuration"
 $Package = Join-Path $Out 'package'
 New-Item $Tools,$Out,$Package -ItemType Directory -Force | Out-Null
-# Never carry an old certificate, catalog or image into a new package.
 Get-ChildItem $Package -File | Remove-Item
 Start-Transcript -Path (Join-Path $Out 'build.log') -Force | Out-Null
 $cert = $null; $rootImported = $false
@@ -23,9 +22,9 @@ function Find-One([string]$Dir,[string]$Name,[string]$Pattern='.') {
 }
 try {
     $specs = @(
-        @{Id='Microsoft.Windows.WDK.ARM64'; Version='10.0.26100.6584'},
-        @{Id='Microsoft.Windows.WDK.x64'; Version='10.0.26100.6584'},
-        @{Id='Microsoft.Windows.SDK.CPP'; Version='10.0.26100.1'}
+        @{Id='Microsoft.Windows.WDK.ARM64'; Version='10.0.26100.6584'; Hash='864E7D7E9F2B738436252130C144977CA951560B4A147B99F652BFC87DA23FC94CC839BD53BFE474AE20C06746BB3A2D57021C35377803C39EED7454FA1ECB8E'},
+        @{Id='Microsoft.Windows.WDK.x64'; Version='10.0.26100.6584'; Hash='8E175D6819E1303AADDC656BDF64554ED691D0A1E66438D8D09093327D74390A64E3E01285708AF50034F6F05ACE9F278B5323BBCE2A3394865DF21F9F2389FA'},
+        @{Id='Microsoft.Windows.SDK.CPP'; Version='10.0.26100.1'; Hash='66F7915A97D02A976E491C88F56C51150E41A54F5767E2B604643A959BA9FFF3E21FE28F14818577F42AAEF16387E8ACAE538E889E5C345E882AE6430A1D44EF'}
     )
     $evidence = @()
     foreach ($spec in $specs) {
@@ -33,13 +32,14 @@ try {
         $dir = Join-Path $Tools "$id.$version"; $nupkg = "$dir.nupkg"
         $uri = "https://api.nuget.org/v3-flatcontainer/$id/$version/$id.$version.nupkg"
         if (!(Test-Path $nupkg)) { Invoke-WebRequest -Uri $uri -OutFile $nupkg }
+        $hash = (Get-FileHash $nupkg -Algorithm SHA512).Hash
+        if ($hash -cne $spec.Hash) { throw "Pinned NuGet content hash mismatch: $id" }
         Run 'nuget.exe' @('verify','-All',$nupkg,'-NonInteractive','-Verbosity','quiet')
         if (!(Test-Path $dir)) {
             Copy-Item $nupkg "$dir.zip" -Force
             Expand-Archive -Path "$dir.zip" -DestinationPath $dir
             Remove-Item "$dir.zip"
         }
-        $hash = (Get-FileHash $nupkg -Algorithm SHA512).Hash
         $evidence += @{Id=$spec.Id; Version=$version; Sha512=$hash}
         Write-Host "Verified $($spec.Id) $version SHA512=$hash"
     }
@@ -50,7 +50,8 @@ try {
     $sys = Join-Path $Package 'Rpi5Display.sys'
     Copy-Item (Join-Path $Root 'package/Rpi5Display.inf') $Package -Force
     $infverif = Find-One $wdkHost 'infverif.exe' '[\\/]x64[\\/]'
-    $inf2cat = Find-One $wdkHost 'inf2cat.exe' '[\\/]x64[\\/]'
+    # Inf2Cat is distributed as an x86 host tool in this WDK; it still catalogs ARM64 targets.
+    $inf2cat = Find-One $wdkHost 'inf2cat.exe'
     Run $infverif @('/w','/v',(Join-Path $Package 'Rpi5Display.inf'))
     $signTool = Find-One $sdk 'signtool.exe' '[\\/]x64[\\/]'
     if ($TestSign) {
@@ -85,7 +86,6 @@ try {
     if ($TestSign) {
         . (Join-Path $PSScriptRoot 'Lab-Common.ps1')
         Initialize-LabCrypto
-        # Detached CMS authenticates the exact JSON bytes without running any metadata as code.
         $content = [Security.Cryptography.Pkcs.ContentInfo]::new([IO.File]::ReadAllBytes($manifestPath))
         $cms = [Security.Cryptography.Pkcs.SignedCms]::new($content,$true)
         $signer = [Security.Cryptography.Pkcs.CmsSigner]::new($cert)
@@ -94,13 +94,14 @@ try {
         $cms.ComputeSignature($signer)
         [IO.File]::WriteAllBytes((Join-Path $Out 'manifest.p7s'),$cms.Encode())
         Test-LabManifest -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint | Out-Null
-        $tamperTest = Join-Path $Root 'tests/Package.Tests.ps1'
-        if (Test-Path $tamperTest) { & $tamperTest -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint }
+        & (Join-Path $Root 'tests/Package.Tests.ps1') -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint
     }
     foreach ($helper in @('Lab-Common.ps1','Collect-Platform.ps1','Install-Lab.ps1','Remove-Lab.ps1')) {
-        $p = Join-Path $PSScriptRoot $helper
-        if (Test-Path $p) { Copy-Item $p $Out -Force }
+        Copy-Item (Join-Path $PSScriptRoot $helper) $Out -Force
     }
+    Copy-Item (Join-Path $Root 'LICENSE'),(Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Out -Force
+    "Original source and build scripts: https://github.com/farjanatech/rpi5-windows-display-driver/tree/$sourceCommit`nSource archive: https://github.com/farjanatech/rpi5-windows-display-driver/archive/$sourceCommit.zip`nExperimental lab package; NOT HARDWARE VALIDATED." |
+        Set-Content (Join-Path $Out 'SOURCE.txt') -Encoding utf8
     Get-ChildItem $Out -Filter *.obj | Remove-Item
     Write-Host 'BUILD/PACKAGE checks passed. This is NOT a Pi hardware test or a production release.'
 } finally {
