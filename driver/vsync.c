@@ -19,7 +19,7 @@
 #define RP_VSYNC_PRIME_DELAY_US       50u
 #define RP_VSYNC_PRIME_ATTEMPTS       2000u
 
-static const GUID gRpDisplayHandoffGuid =
+static GUID gRpDisplayHandoffGuid =
     { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
 
 static volatile ULONG *RpPvRegister(RP_ADAPTER *a, ULONG offset)
@@ -67,7 +67,7 @@ BOOLEAN RpVSyncRegistrationAvailable(VOID)
 
     RtlZeroMemory(&handoff, sizeof(handoff));
     status = ExGetFirmwareEnvironmentVariable(
-        &name, (LPGUID)&gRpDisplayHandoffGuid, &handoff, &bytes, &attributes);
+        &name, &gRpDisplayHandoffGuid, &handoff, &bytes, &attributes);
 
     if (!NT_SUCCESS(status) ||
         bytes != sizeof(handoff) ||
@@ -191,9 +191,7 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
                          RP_PV_INT_VFP_START);
     KeMemoryBarrier();
 
-    frequency = KeQueryPerformanceCounter(&frequency);
-    UNREFERENCED_PARAMETER(frequency);
-    KeQueryPerformanceCounter(&frequency);
+    (VOID)KeQueryPerformanceCounter(&frequency);
     a->QpcFrequency = frequency.QuadPart;
     if (a->QpcFrequency <= 0) {
         MmUnmapIoSpace(a->PixelValveRegs, a->PixelValveBytes);
