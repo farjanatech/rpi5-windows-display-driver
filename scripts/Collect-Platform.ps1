@@ -21,9 +21,18 @@ $devices = @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'AC
 $adapters = @()
 foreach ($device in $devices) {
     $entry = [ordered]@{InstanceId=$device.InstanceId; Status=$device.Status; Properties=@{}}
-    foreach ($key in @('HardwareIds','CompatibleIds','Service','DriverInfPath','DriverVersion','ProblemCode')) {
-        $entry.Properties[$key] = Read-Optional { (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "DEVPKEY_Device_$key" -ErrorAction Stop).Data }
-    }
+    # An unbound device legitimately lacks some properties. Enumerate once, and
+    # distinguish absence from an actual provider/access failure.
+    try {
+        $properties = @(Get-PnpDeviceProperty -InstanceId $device.InstanceId -ErrorAction Stop)
+        $missing = @()
+        foreach ($key in @('HardwareIds','CompatibleIds','Service','DriverInfPath','DriverVersion','ProblemCode')) {
+            $found = @($properties | Where-Object { $_.KeyName -eq "DEVPKEY_Device_$key" })
+            if ($found.Count -eq 1 -and $null -ne $found[0].PSObject.Properties['Data']) { $entry.Properties[$key] = $found[0].Data }
+            else { $entry.Properties[$key] = $null; $missing += $key }
+        }
+        $entry['AbsentProperties'] = $missing
+    } catch { $entry['PropertyReadError'] = $_.Exception.Message }
     $entry['ResourcesAndDriverRanking'] = Read-Optional {
         $text = & pnputil.exe /enum-devices /instanceid $device.InstanceId /resources /drivers 2>&1 | Out-String
         @{ExitCode=$LASTEXITCODE; Output=$text}
@@ -31,6 +40,17 @@ foreach ($device in $devices) {
     $adapters += $entry
 }
 $ci = Read-Optional { Initialize-LabNative; [Rpi5Lab.Native]::CodeIntegrity() }
+# Version/hash metadata only, never copy Windows binaries into a support bundle.
+$graphicsFiles = @()
+foreach ($name in @('dxgkrnl.sys','BasicDisplay.sys')) {
+    $path = Join-Path $env:SystemRoot ("System32/drivers/" + $name)
+    try {
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        $graphicsFiles += [ordered]@{Name=$name; FileVersion=$item.VersionInfo.FileVersion;
+            ProductVersion=$item.VersionInfo.ProductVersion; Bytes=$item.Length;
+            Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash}
+    } catch { $graphicsFiles += [ordered]@{Name=$name; Error=$_.Exception.Message} }
+}
 $report = [ordered]@{
     SchemaVersion=1; CapturedUtc=(Get-Date).ToUniversalTime().ToString('o');
     Windows=@{Caption=$os.Caption; Build=$os.BuildNumber; Version=$os.Version; Architecture=$os.OSArchitecture;
@@ -38,6 +58,7 @@ $report = [ordered]@{
     Platform=@{Manufacturer=$computer.Manufacturer; Model=$computer.Model; RamBytes=$computer.TotalPhysicalMemory;
         BoardRevision=$BoardRevision; HdmiPort=$HdmiPort};
     Firmware=@{ReportedVersion=$bios.SMBIOSBIOSVersion; ReportedReleaseDate=$bios.ReleaseDate; SourceCommit=$FirmwareCommit};
+    WindowsGraphicsFiles=$graphicsFiles;
     CodeIntegrityOptions=$ci;
     SecureBoot=(Read-Optional { Confirm-SecureBootUEFI });
     DisplayDevices=$adapters;

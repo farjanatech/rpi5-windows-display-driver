@@ -20,7 +20,7 @@ $libs = Split-Path (Find-One $Wdk 'ntoskrnl.lib' '[\\/]arm64[\\/]')
 $vcInclude = Join-Path $env:VCToolsInstallDir 'include'
 $compile = @('/nologo','/c','/TC','/std:c11','/kernel','/W4','/WX','/Zl','/GS','/guard:cf','/Z7','/X',
     '/D_ARM64_','/D_WIN32_WINNT=0x0A00','/DWINVER=0x0A00','/DNTDDI_VERSION=0x0A000008',
-    '/DDXGKDDI_INTERFACE_VERSION=0x300E',"/I$km","/I$km/crt","/I$wdkShared","/I$shared","/I$um","/I$ucrt","/I$vcInclude")
+    '/DDXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8',"/I$km","/I$km/crt","/I$wdkShared","/I$shared","/I$um","/I$ucrt","/I$vcInclude")
 if ($Configuration -eq 'Debug') { $compile += '/Od'; $compile += '/DDBG=1' } else { $compile += '/O2' }
 $objects = @(); $failed = @()
 foreach ($file in Get-ChildItem (Join-Path $Root 'driver') -Filter *.c) {

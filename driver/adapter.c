@@ -8,6 +8,7 @@ DXGKDDI_ADD_DEVICE RpAdd;
 DXGKDDI_START_DEVICE RpStart;
 DXGKDDI_STOP_DEVICE RpStop;
 DXGKDDI_REMOVE_DEVICE RpRemove;
+DXGKDDI_DISPATCH_IO_REQUEST RpDispatchIoRequest;
 DXGKDDI_QUERY_CHILD_RELATIONS RpChildren;
 DXGKDDI_QUERY_CHILD_STATUS RpChildStatus;
 DXGKDDI_QUERY_DEVICE_DESCRIPTOR RpDescriptor;
@@ -79,33 +80,32 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
 {
     KMDDOD_INITIALIZATION_DATA init;
     NTSTATUS status;
+    RTL_OSVERSIONINFOW os;
+    ULONG missing = 0;
     RpTraceInitialize();
     RtlZeroMemory(&init, sizeof(init));
-    init.Version = DXGKDDI_INTERFACE_VERSION_WIN8;
-    init.DxgkDdiAddDevice = RpAdd;
-    init.DxgkDdiStartDevice = RpStart;
-    init.DxgkDdiStopDevice = RpStop;
-    init.DxgkDdiRemoveDevice = RpRemove;
-    init.DxgkDdiQueryChildRelations = RpChildren;
-    init.DxgkDdiQueryChildStatus = RpChildStatus;
-    init.DxgkDdiQueryDeviceDescriptor = RpDescriptor;
-    init.DxgkDdiSetPowerState = RpPower;
-    init.DxgkDdiResetDevice = RpReset;
-    init.DxgkDdiUnload = RpUnload;
-    init.DxgkDdiQueryAdapterInfo = RpCaps;
-    init.DxgkDdiIsSupportedVidPn = RpIsSupported;
-    init.DxgkDdiEnumVidPnCofuncModality = RpEnumModes;
-    init.DxgkDdiRecommendFunctionalVidPn = RpRecommendFunctional;
-    init.DxgkDdiRecommendMonitorModes = RpRecommendMonitor;
-    init.DxgkDdiCommitVidPn = RpCommit;
-    init.DxgkDdiUpdateActiveVidPnPresentPath = RpUpdatePath;
-    init.DxgkDdiQueryVidPnHWCapability = RpQueryVidPnCaps;
-    init.DxgkDdiSetVidPnSourceVisibility = RpVisibility;
-    init.DxgkDdiPresentDisplayOnly = RpPresent;
-    init.DxgkDdiStopDeviceAndReleasePostDisplayOwnership = RpReleasePost;
-    init.DxgkDdiSystemDisplayEnable = RpSystemEnable;
-    init.DxgkDdiSystemDisplayWrite = RpSystemWrite;
-    /* No interrupts, VSync claims, render DDIs, private interfaces or IOCTLs. */
+    init.Version = DXGKDDI_INTERFACE_VERSION;
+    #define RP_BIND_CALLBACK(field, function) init.field = function;
+    RP_DOD_CALLBACK_BINDINGS(RP_BIND_CALLBACK)
+    #undef RP_BIND_CALLBACK
+    /* A required dispatch entry must exist even when every legacy IOCTL is unsupported.
+       Do not add interrupts, VSync claims, render DDIs or private memory interfaces. */
+    #define RP_CHECK_CALLBACK(field) if (!init.field) { ++missing; RP_LOG("registration missing callback=%s\n", #field); }
+    RP_DOD_REQUIRED_ENTRY_CALLBACKS(RP_CHECK_CALLBACK)
+    #undef RP_CHECK_CALLBACK
+    if (missing) {
+        RP_LOG("registration aborted locally: missing=%lu\n", missing);
+        RpTraceShutdown();
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    RtlZeroMemory(&os, sizeof(os));
+    os.dwOSVersionInfoSize = sizeof(os);
+    status = RtlGetVersion(&os);
+    RP_LOG("registration version=%s compiledDDI=0x%lx requestedDDI=0x%lx initBytes=%lu pointerBytes=%lu dispatchOffset=%lu os=%lu.%lu.%lu osStatus=0x%08lx\n",
+        RP_DRIVER_VERSION, (ULONG)DXGKDDI_INTERFACE_VERSION, init.Version,
+        (ULONG)sizeof(init), (ULONG)sizeof(PVOID),
+        (ULONG)FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest),
+        os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, status);
     RP_LOG("registering experimental firmware-framebuffer KMDOD\n");
     status = DxgkInitializeDisplayOnlyDriver(object, path, &init);
     RP_LOG("DriverEntry version=%s status=0x%08lx\n", RP_DRIVER_VERSION, status);
@@ -115,6 +115,7 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
 NTSTATUS NTAPI RpAdd(PDEVICE_OBJECT pdo, PVOID *context)
 {
     RP_ADAPTER *a;
+    RP_LOG("AddDevice entered\n");
     if (!pdo || !context) return STATUS_INVALID_PARAMETER;
     *context = NULL;
     if (!RpHardwareMatch(pdo)) {

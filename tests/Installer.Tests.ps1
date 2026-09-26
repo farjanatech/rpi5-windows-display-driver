@@ -8,6 +8,21 @@ Set-StrictMode -Version Latest
 foreach ($case in @(@(3010,$false,'RebootRequired'),@(3010,$true,'RebootRequired'),@(0,$false,'StagedOnly'),@(0,$true,'CheckSelectedBinary'),@(5,$true,'Failed'))) {
     if ((Get-LabInstallDisposition $case[0] $case[1]) -cne $case[2]) { throw 'Installation-state classification regression.' }
 }
+# Scoped mock: exercise zero/enabled/missing/unreadable power evidence without
+# changing the CI host's actual registry or power policy.
+& {
+    function Get-ItemPropertyValue { param($Path,$Name,$ErrorAction); if ($script:PowerMockFails) { throw 'simulated read failure' }; return $script:PowerMockValue }
+    $script:PowerMockFails=$false
+    foreach ($case in @(@(0,$true),@(1,$false),@($null,$false),@('0',$false))) {
+        $script:PowerMockValue=$case[0]; $accepted=$true
+        try { Assert-LabHibernateDisabled } catch { $accepted=$false }
+        if ($accepted -ne $case[1]) { throw 'Hibernate preflight regression.' }
+    }
+    $script:PowerMockFails=$true; $accepted=$true
+    try { Assert-LabHibernateDisabled } catch { $accepted=$false }
+    if ($accepted) { throw 'Unverifiable power state was accepted.' }
+}
+Write-Host 'PASS: preflight rejects enabled, missing and unreadable hibernation state.'
 if ((ConvertTo-LabArgument 'C:\folder with spaces\') -cne '"C:\folder with spaces\\"') { throw 'Trailing slash argument quoting failed.' }
 if ((ConvertTo-LabArgument 'a"b') -cne '"a\"b"') { throw 'Embedded quote handling failed.' }
 $dir=Join-Path $env:TEMP ('Rpi5DiagnosticsTest-'+[guid]::NewGuid().ToString('N'))

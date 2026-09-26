@@ -8,9 +8,14 @@
 #include <dispmprt.h>
 #pragma warning(pop)
 #include "../core/framebuffer.h"
+#include "../core/registration_contract.h"
+/* Pin the existing, accepted KMDOD ABI; the fix is not a WDDM upgrade. */
+C_ASSERT(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8);
+C_ASSERT(sizeof(PVOID) == 8);
+C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.1"
+#define RP_DRIVER_VERSION "0.1.2"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
