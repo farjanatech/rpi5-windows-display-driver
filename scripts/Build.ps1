@@ -4,6 +4,12 @@ param([ValidateSet('Debug','Release')][string]$Configuration = 'Debug', [switch]
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'The build host requires PowerShell 7 or later.' }
+if ($TestSign) {
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Test-signature validation requires an elevated dedicated build host. One disposable root certificate is temporarily installed and removed; no target driver is installed.'
+    }
+}
 $Root = Split-Path $PSScriptRoot -Parent
 $Tools = Join-Path $Root '.tools'
 $Out = Join-Path $Root "out/ARM64/$Configuration"
@@ -68,11 +74,13 @@ try {
     if ($TestSign) {
         $cat = Join-Path $Package 'Rpi5Display.cat'
         Run $signTool @('sign','/fd','SHA256','/s','My','/sha1',$cert.Thumbprint,$cat)
-        Write-Host 'PHASE: temporary build-host trust for signature validation'
-        # Bounded developer-tool call instead of an interactive certificate-store cmdlet.
-        # This modifies only the build user's store, and the exact entry is removed below.
+        Write-Host 'PHASE: temporary dedicated BUILD-HOST LocalMachine root trust'
+        # CurrentUser root insertion displays a trust UI even through certutil -f.
+        # CI is an elevated disposable VM. Temporarily use its machine store,
+        # then remove exactly this newly generated certificate in finally.
+        # This never modifies the physical Pi, test-signing mode, or Secure Boot.
         $rootImported = $true
-        Run 'certutil.exe' @('-user','-f','-addstore','Root',$cer)
+        Run 'certutil.exe' @('-f','-addstore','Root',$cer)
         Run $signTool @('verify','/pa','/v',$sys)
         Run $signTool @('verify','/pa','/v','/c',$cat,$sys)
     }
@@ -112,7 +120,7 @@ try {
     Write-Host 'BUILD/PACKAGE checks passed. This is NOT a Pi hardware test or a production release.'
 } finally {
     if ($cert) {
-        if ($rootImported) { Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -ErrorAction SilentlyContinue }
+        if ($rootImported) { Remove-Item "Cert:\LocalMachine\Root\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue }
         Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue
     }
     Stop-Transcript | Out-Null
