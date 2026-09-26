@@ -36,7 +36,7 @@ param([string]$Root,[string]$Data)
 $ErrorActionPreference='Stop'
 $env:ProgramData=$Data
 . (Join-Path $Root 'Lab-Common.ps1')
-$pin=Import-PowerShellDataFile (Join-Path $Root 'Package-Pin.psd1')
+$pin=Get-Content -LiteralPath (Join-Path $Root 'Package-Pin.json') -Raw | ConvertFrom-Json
 $null=Test-LabManifest $Root $pin.Commit $pin.Thumbprint
 Write-Host 'CLASSIC_POWERSHELL_MANIFEST_VERIFIED'
 & (Join-Path $Root 'Run-Lab.ps1') -Action Preflight

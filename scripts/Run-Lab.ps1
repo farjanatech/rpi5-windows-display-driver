@@ -55,9 +55,11 @@ try {
     }
     if ($Action -in @('Install','Preflight')) {
         $artifactRoot=$PSScriptRoot
-        $pinPath=Join-Path $artifactRoot 'Package-Pin.psd1'
-        if (!(Test-Path -LiteralPath $pinPath)) { throw 'Use the extracted CI package: Package-Pin.psd1 is missing. A source checkout is not an installable artifact.' }
-        $pin=Import-PowerShellDataFile -LiteralPath $pinPath
+        $pinPath=Join-Path $artifactRoot 'Package-Pin.json'
+        if (!(Test-Path -LiteralPath $pinPath)) { throw 'Use the extracted CI package: Package-Pin.json is missing. A source checkout is not an installable artifact.' }
+        $pinFile=Get-Item -LiteralPath $pinPath -ErrorAction Stop
+        if ($pinFile.Length -gt 4096 -or ($pinFile.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid package pin file.' }
+        $pin=Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
         $result.PackageCommit=$pin.Commit
         $manifest=Test-LabManifest -ArtifactRoot $artifactRoot -ExpectedCommit $pin.Commit -ExpectedThumbprint $pin.Thumbprint
         Copy-Item (Join-Path $artifactRoot 'manifest.json') $directory

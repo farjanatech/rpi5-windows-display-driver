@@ -114,8 +114,8 @@ try {
         Copy-Item (Join-Path $PSScriptRoot $helper) $Out -Force
     }
     if ($TestSign) {
-        "@{ Commit = '$sourceCommit'; Thumbprint = '$($cert.Thumbprint)' }" |
-            Set-Content (Join-Path $Out 'Package-Pin.psd1') -Encoding utf8
+        [ordered]@{Commit=$sourceCommit; Thumbprint=$cert.Thumbprint} | ConvertTo-Json |
+            Set-Content (Join-Path $Out 'Package-Pin.json') -Encoding utf8
         & (Join-Path $Root 'tests/Installer.Tests.ps1') -ArtifactRoot $Out
     }
     Run 'git.exe' @('-C',$Root,'archive','--format=zip',"--output=$Out/source.zip",'HEAD')
