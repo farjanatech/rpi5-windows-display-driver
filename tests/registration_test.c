@@ -8,10 +8,12 @@
 #include "../core/registration_contract.h"
 #define DECLARE_STUB(field, routine) static void routine(void) {}
 RP_DOD_CALLBACK_BINDINGS(DECLARE_STUB)
+RP_DOD_VSYNC_CALLBACK_BINDINGS(DECLARE_STUB)
 #undef DECLARE_STUB
 struct TestTable {
 #define DECLARE_FIELD(field, routine) void (*field)(void);
 RP_DOD_CALLBACK_BINDINGS(DECLARE_FIELD)
+RP_DOD_VSYNC_CALLBACK_BINDINGS(DECLARE_FIELD)
 #undef DECLARE_FIELD
 };
 static unsigned missing(const struct TestTable *table)
@@ -36,7 +38,20 @@ int main(void)
     assert(table.DxgkDdiDpcRoutine == RpDpc);
     assert(table.DxgkDdiSetPointerPosition == RpPointerPosition);
     assert(table.DxgkDdiSetPointerShape == RpPointerShape);
+    assert(table.DxgkDdiGetScanLine == NULL);
+    assert(table.DxgkDdiControlInterrupt == NULL);
     assert(missing(&table) == 0);
+
+#define BIND_VSYNC_FIELD(field, routine) table.field = routine;
+    RP_DOD_VSYNC_CALLBACK_BINDINGS(BIND_VSYNC_FIELD)
+#undef BIND_VSYNC_FIELD
+    assert(table.DxgkDdiGetScanLine == RpGetScanLine);
+    assert(table.DxgkDdiControlInterrupt == RpControlInterrupt);
+
+    /* Windows requires the optional VSync pair together, never singly. */
+    table.DxgkDdiGetScanLine = NULL;
+    assert(table.DxgkDdiControlInterrupt != NULL);
+    table.DxgkDdiGetScanLine = RpGetScanLine;
     /* Reproduce the actual 0.1.1 omission: only the dispatch pointer is NULL. */
     table.DxgkDdiDispatchIoRequest = NULL;
     assert(missing(&table) == 1);
@@ -45,6 +60,6 @@ int main(void)
     RP_DOD_REQUIRED_ENTRY_CALLBACKS(MUTATE_FIELD)
 #undef MUTATE_FIELD
     assert(missing(&table) == 0 && tested == 11);
-    printf("PASS: old missing-dispatch regression, %u required-entry omissions, and KMDOD compatibility callbacks bound; logical test only\n", tested);
+    printf("PASS: old missing-dispatch regression, %u required-entry omissions, and optional KMDOD VSync callback pair modeled; logical test only\n", tested);
     return 0;
 }
