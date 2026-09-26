@@ -1,0 +1,9 @@
+out/
+.tools/
+.vs/
+*.pfx
+*.p12
+*.key
+*.dmp
+*.binlog
+__pycache__/

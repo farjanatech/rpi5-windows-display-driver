@@ -1,0 +1,65 @@
+name: ARM64 driver validation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: driver-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  portable-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bounds, stride and exhaustive overlap tests (ASan + UBSan)
+        run: |
+          mkdir -p out
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/framebuffer_test.c -o out/framebuffer_test
+          ./out/framebuffer_test
+  arm64-build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts,tests -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+      - name: Build and validate Debug ARM64 lab package
+        timeout-minutes: 8
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Debug -TestSign
+      - name: Build and validate Release ARM64 lab package
+        timeout-minutes: 8
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Release -TestSign
+      - name: Upload lab packages, symbols and validation evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Rpi5Display-ARM64-LAB-${{ github.event.pull_request.head.sha || github.sha }}
+          path: out/ARM64/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain diagnostic logs on failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-diagnostics-${{ github.run_id }}
+          path: |
+            out/**/*.log
+            out/**/*.json
+          if-no-files-found: ignore
