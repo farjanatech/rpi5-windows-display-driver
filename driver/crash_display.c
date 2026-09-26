@@ -13,10 +13,10 @@ NTSTATUS NTAPI RpSystemEnable(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targ
     *width = a->Display.Width; *height = a->Display.Height; *format = a->Display.ColorFormat;
     return STATUS_SUCCESS;
 }
-VOID NTAPI RpSystemWrite(PVOID context, PVOID source, ULONG width, ULONG height, ULONG stride, ULONG x, ULONG y)
+VOID NTAPI RpSystemWrite(PVOID context, PVOID source, UINT width, UINT height, UINT stride, UINT x, UINT y)
 {
     RP_ADAPTER *a = context;
-    ULONG row, col;
+    UINT row, col;
     if (!a || !source || !a->Framebuffer || !a->Active || !width || !height ||
         width > a->Display.Width || height > a->Display.Height || x > a->Display.Width - width ||
         y > a->Display.Height - height || stride < width * 4u) return;
