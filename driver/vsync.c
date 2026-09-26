@@ -228,21 +228,46 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
     return STATUS_SUCCESS;
 }
 
-static BOOLEAN RpDisableVSyncSynchronized(PVOID context)
+typedef struct RP_VSYNC_CONTROL_CONTEXT {
+    RP_ADAPTER *Adapter;
+    BOOLEAN Enable;
+} RP_VSYNC_CONTROL_CONTEXT;
+
+static BOOLEAN RpSetVSyncSynchronized(PVOID context)
 {
-    RP_ADAPTER *a = (RP_ADAPTER *)context;
+    RP_VSYNC_CONTROL_CONTEXT *control = (RP_VSYNC_CONTROL_CONTEXT *)context;
+    RP_ADAPTER *a;
     ULONG enable;
 
-    if (!a || !a->PixelValveRegs) return TRUE;
+    if (!control || !control->Adapter) return FALSE;
+    a = control->Adapter;
+    if (!a->PixelValveRegs) return FALSE;
 
     enable = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
-    WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
-                         enable & ~RP_PV_INT_VFP_START);
-    WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
-                         RP_PV_INT_VFP_START);
+    if (control->Enable) {
+        /* Drop any stale edge before exposing the source to dxgkrnl. */
+        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
+                             RP_PV_INT_VFP_START);
+        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
+                             enable | RP_PV_INT_VFP_START);
+        InterlockedExchange(&a->VSyncInterruptEnabled, 1);
+    } else {
+        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
+                             enable & ~RP_PV_INT_VFP_START);
+        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
+                             RP_PV_INT_VFP_START);
+        InterlockedExchange(&a->VSyncInterruptEnabled, 0);
+    }
     KeMemoryBarrier();
-    InterlockedExchange(&a->VSyncInterruptEnabled, 0);
     return TRUE;
+}
+
+static BOOLEAN RpDisableVSyncSynchronized(PVOID context)
+{
+    RP_VSYNC_CONTROL_CONTEXT control;
+    control.Adapter = (RP_ADAPTER *)context;
+    control.Enable = FALSE;
+    return RpSetVSyncSynchronized(&control);
 }
 
 VOID RpVSyncShutdown(RP_ADAPTER *a)
@@ -280,7 +305,11 @@ NTSTATUS APIENTRY RpControlInterrupt(
     BOOLEAN enableInterrupt)
 {
     RP_ADAPTER *a = (RP_ADAPTER *)context;
-    ULONG enable;
+    RP_VSYNC_CONTROL_CONTEXT control;
+    BOOLEAN synchronized = FALSE;
+    NTSTATUS status;
+
+    PAGED_CODE();
 
     if (!a) return STATUS_INVALID_PARAMETER;
     /*
@@ -291,25 +320,21 @@ NTSTATUS APIENTRY RpControlInterrupt(
         return STATUS_NOT_IMPLEMENTED;
     }
     if (!a->VSyncHardwareReady || !a->PixelValveRegs ||
-        !InterlockedCompareExchange(&a->Active, 0, 0)) {
+        !InterlockedCompareExchange(&a->Active, 0, 0) ||
+        !a->Dxgk.DxgkCbSynchronizeExecution || !a->Dxgk.DeviceHandle) {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    enable = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
-    if (enableInterrupt) {
-        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
-                             RP_PV_INT_VFP_START);
-        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
-                             enable | RP_PV_INT_VFP_START);
-        InterlockedExchange(&a->VSyncInterruptEnabled, 1);
-    } else {
-        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
-                             enable & ~RP_PV_INT_VFP_START);
-        WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
-                             RP_PV_INT_VFP_START);
-        InterlockedExchange(&a->VSyncInterruptEnabled, 0);
-    }
-    KeMemoryBarrier();
+    control.Adapter = a;
+    control.Enable = enableInterrupt;
+    status = a->Dxgk.DxgkCbSynchronizeExecution(
+        a->Dxgk.DeviceHandle,
+        RpSetVSyncSynchronized,
+        &control,
+        0,
+        &synchronized);
+    if (!NT_SUCCESS(status)) return status;
+    if (!synchronized) return STATUS_UNSUCCESSFUL;
 
     RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu\n",
            enableInterrupt, a->PixelValveIndex);
