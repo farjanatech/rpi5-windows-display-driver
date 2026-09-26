@@ -45,6 +45,24 @@ Use UEFI exp0.7 from `farjanatech/rpi5-uefi#9` and driver PR #7 while keeping ex
 
 Passing M3.1 validates metadata/pacing inputs for the recorded monitor/mode; it does not establish hardware acceleration or native HDMI/VSync programming.
 
+## M3.2: sub-1st-hzfix hardware VSync
+
+This branch adds the KMDOD VSync-control DDIs and observes the existing firmware-programmed PixelValve scanout. It does not add mode programming or GPU rendering.
+
+- [ ] The 0.1.9-hzfix package starts with ProblemCode 0 on UEFI exp0.7.
+- [ ] The desktop remains visible and present counters continue advancing.
+- [ ] `FirmwareTimingValid=1` and the firmware timing matches the active POST mode.
+- [ ] `VSyncAdvertised=1` and `VSyncHardwareReady=1`.
+- [ ] The selected PixelValve corresponds to firmware display ID 2 (HDMI0/PV0) or 7 (HDMI1/PV1).
+- [ ] Windows calls the scan-line path and the scan-line query counter advances.
+- [ ] PixelValve VFP-start interrupts are reported at the real display cadence while Windows enables VSync.
+- [ ] Windows Advanced Display shows a numeric refresh rate derived from the validated timing.
+- [ ] No TDR, Code 12, Code 43, display corruption or loss of output occurs.
+- [ ] Wi-Fi, fan/temp, NVMe, microSD and USB remain healthy.
+- [ ] Rollback to the released 0.1.8 package works.
+
+Passing M3.2 validates the first hardware-backed KMDOD VSync implementation only. It does not establish V3D/Direct3D acceleration or a Task Manager GPU engine.
+
 ## M5: reliability before daily use
 
 Proposed project thresholds, not Microsoft certification:
