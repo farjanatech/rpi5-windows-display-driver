@@ -139,15 +139,19 @@ Pre/post snapshots and installation output do not prove the loaded driver produc
 '@
     $notice | Set-Content (Join-Path $Directory 'PRIVACY-AND-LIMITATIONS.txt')
     $base=(Resolve-Path $Directory).Path
-    Get-ChildItem -LiteralPath $base -Recurse -File | Where-Object { $_.Name -ne 'bundle-hashes.json' } |
-        ForEach-Object { @{Path=$_.FullName.Substring($base.Length+1); Sha256=(Get-FileHash -LiteralPath $_.FullName).Hash; Bytes=$_.Length} } |
+    # -Name returns paths relative to the supplied root and avoids 8.3/long-path
+    # substring mistakes when recording the integrity manifest.
+    Get-ChildItem -LiteralPath $base -Recurse -File -Name | Where-Object { [IO.Path]::GetFileName($_) -ne 'bundle-hashes.json' } |
+        ForEach-Object {
+            $file=Get-Item -LiteralPath (Join-Path $base $_) -ErrorAction Stop
+            @{Path=$_; Sha256=(Get-FileHash -LiteralPath $file.FullName).Hash; Bytes=$file.Length}
+        } |
         ConvertTo-Json -Depth 4 | Set-Content (Join-Path $base 'bundle-hashes.json') -Encoding utf8
     $zip=$base+'.zip'
     Compress-Archive -Path (Join-Path $base '*') -DestinationPath $zip -CompressionLevel Optimal -Force
     Write-Host "SUPPORT BUNDLE: $zip"
     return $zip
 }
-
 function Save-PreviousLabEvidence {
     param([string]$Directory)
     # Recover limited evidence after a crash interrupted the previous run's finalizer.
@@ -156,10 +160,13 @@ function Save-PreviousLabEvidence {
     $destination=Join-Path $Directory 'previous-sessions'
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     $remaining=134217728L
+    # A short (8.3) ancestor path and Get-ChildItem's long path can refer to
+    # the same directory. Exclude our unique session NAME, not raw path text.
+    $currentSessionName=(Get-Item -LiteralPath $Directory -Force -ErrorAction Stop).Name
     foreach ($category in @('Logs','Lab')) {
         $parent=Join-Path $root $category
         if (!(Test-Path -LiteralPath $parent)) { continue }
-        foreach ($session in @(Get-ChildItem -LiteralPath $parent -Directory | Where-Object { $_.FullName -ne $Directory } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 2)) {
+        foreach ($session in @(Get-ChildItem -LiteralPath $parent -Directory | Where-Object { $_.Name -ine $currentSessionName } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 2)) {
             try {
                 Assert-LabNoReparseAncestors $session.FullName
                 $to=Join-Path $destination ($category+'-'+$session.Name)
