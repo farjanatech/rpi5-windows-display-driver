@@ -9,6 +9,8 @@ DXGKDDI_START_DEVICE RpStart;
 DXGKDDI_STOP_DEVICE RpStop;
 DXGKDDI_REMOVE_DEVICE RpRemove;
 DXGKDDI_DISPATCH_IO_REQUEST RpDispatchIoRequest;
+DXGKDDI_INTERRUPT_ROUTINE RpInterrupt;
+DXGKDDI_DPC_ROUTINE RpDpc;
 DXGKDDI_QUERY_CHILD_RELATIONS RpChildren;
 DXGKDDI_QUERY_CHILD_STATUS RpChildStatus;
 DXGKDDI_QUERY_DEVICE_DESCRIPTOR RpDescriptor;
@@ -16,6 +18,8 @@ DXGKDDI_SET_POWER_STATE RpPower;
 DXGKDDI_RESET_DEVICE RpReset;
 DXGKDDI_UNLOAD RpUnload;
 DXGKDDI_QUERYADAPTERINFO RpCaps;
+DXGKDDI_SETPOINTERPOSITION RpPointerPosition;
+DXGKDDI_SETPOINTERSHAPE RpPointerShape;
 DXGKDDI_STOP_DEVICE_AND_RELEASE_POST_DISPLAY_OWNERSHIP RpReleasePost;
 
 typedef enum RP_START_STAGE {
@@ -313,6 +317,43 @@ NTSTATUS NTAPI RpReleasePost(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targe
     RpLeave(a);
     return RpStop(a);
 }
+/* Microsoft KMDOD registers these callbacks even though the sample has no
+   hardware cursor and does not handle display interrupts. Keep the same safe
+   semantics so the display-only callback table is complete without claiming
+   unsupported hardware features. */
+BOOLEAN NTAPI RpInterrupt(PVOID context, ULONG messageNumber)
+{
+    UNREFERENCED_PARAMETER(context);
+    UNREFERENCED_PARAMETER(messageNumber);
+    return FALSE;
+}
+
+VOID NTAPI RpDpc(PVOID context)
+{
+    RP_ADAPTER *a = context;
+    if (a && InterlockedCompareExchange(&a->Active, 0, 0) &&
+        a->Dxgk.DxgkCbNotifyDpc && a->Dxgk.DeviceHandle) {
+        a->Dxgk.DxgkCbNotifyDpc(a->Dxgk.DeviceHandle);
+    }
+}
+
+NTSTATUS APIENTRY RpPointerPosition(CONST HANDLE context, CONST DXGKARG_SETPOINTERPOSITION *position)
+{
+    RP_ADAPTER *a = (RP_ADAPTER *)context;
+    if (!a || !position || position->VidPnSourceId != 0) return STATUS_INVALID_PARAMETER;
+    /* No hardware cursor is advertised. Windows can still request that an
+       existing pointer be hidden during mode transitions. */
+    if (!position->Flags.Visible) return STATUS_SUCCESS;
+    return STATUS_UNSUCCESSFUL;
+}
+
+NTSTATUS APIENTRY RpPointerShape(CONST HANDLE context, CONST DXGKARG_SETPOINTERSHAPE *shape)
+{
+    UNREFERENCED_PARAMETER(context);
+    if (!shape || shape->VidPnSourceId != 0) return STATUS_INVALID_PARAMETER;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
 NTSTATUS NTAPI RpChildren(PVOID context, PDXGK_CHILD_DESCRIPTOR desc, ULONG size)
 {
     RP_ADAPTER *a = context;
