@@ -39,3 +39,5 @@ Run 'link.exe' (@('/nologo','/DRIVER','/SUBSYSTEM:NATIVE,10.00','/MACHINE:ARM64'
 Run 'dumpbin.exe' @('/headers',$sys)
 Run 'dumpbin.exe' @('/imports',$sys)
 Run 'python.exe' @((Join-Path $Root 'scripts/check_pe.py'),$sys)
+
+Run 'python.exe' @((Join-Path $Root 'tests/pe_mutation_test.py'),$sys)

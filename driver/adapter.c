@@ -24,6 +24,12 @@ BOOLEAN RpEnter(RP_ADAPTER *a)
         ExReleaseRundownProtection(&a->Rundown); return FALSE;
     }
     KeWaitForSingleObject(&a->Mutex, Executive, KernelMode, FALSE, NULL);
+    /* Stop may have started while this caller waited for the mutex. */
+    if (!InterlockedCompareExchange(&a->Active, 0, 0)) {
+        KeReleaseMutex(&a->Mutex, FALSE);
+        ExReleaseRundownProtection(&a->Rundown);
+        return FALSE;
+    }
     return TRUE;
 }
 VOID RpLeave(RP_ADAPTER *a)
@@ -72,6 +78,8 @@ static BOOLEAN RpHardwareMatch(PDEVICE_OBJECT pdo)
 NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
 {
     KMDDOD_INITIALIZATION_DATA init;
+    NTSTATUS status;
+    RpTraceInitialize();
     RtlZeroMemory(&init, sizeof(init));
     init.Version = DXGKDDI_INTERFACE_VERSION_WIN8;
     init.DxgkDdiAddDevice = RpAdd;
@@ -99,14 +107,20 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     init.DxgkDdiSystemDisplayWrite = RpSystemWrite;
     /* No interrupts, VSync claims, render DDIs, private interfaces or IOCTLs. */
     RP_LOG("registering experimental firmware-framebuffer KMDOD\n");
-    return DxgkInitializeDisplayOnlyDriver(object, path, &init);
+    status = DxgkInitializeDisplayOnlyDriver(object, path, &init);
+    RP_LOG("DriverEntry version=%s status=0x%08lx\n", RP_DRIVER_VERSION, status);
+    if (!NT_SUCCESS(status)) RpTraceShutdown();
+    return status;
 }
 NTSTATUS NTAPI RpAdd(PDEVICE_OBJECT pdo, PVOID *context)
 {
     RP_ADAPTER *a;
     if (!pdo || !context) return STATUS_INVALID_PARAMETER;
     *context = NULL;
-    if (!RpHardwareMatch(pdo)) return STATUS_DEVICE_CONFIGURATION_ERROR;
+    if (!RpHardwareMatch(pdo)) {
+        RP_LOG("AddDevice rejected: hardware ID is not ACPI\\BCM2712\n");
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
     a = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*a), RP_POOL_TAG);
     if (!a) return STATUS_INSUFFICIENT_RESOURCES;
     a->Pdo = pdo;
@@ -124,6 +138,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     size_t bytes;
     if (!a || !start || !iface || !sources || !children) return STATUS_INVALID_PARAMETER;
     *sources = *children = 0;
+    RP_LOG("StartDevice begin; interface version=0x%08lx size=%lu\n", iface->Version, iface->Size);
     if (!RpLabEnabled(a->Pdo)) {
         RP_LOG("start blocked: per-device LabEnable opt-in is absent\n");
         return STATUS_DEVICE_CONFIGURATION_ERROR;
@@ -136,11 +151,14 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     RtlCopyMemory(&a->Dxgk, iface, min(iface->Size, sizeof(a->Dxgk)));
     RtlZeroMemory(&device, sizeof(device));
     st = iface->DxgkCbGetDeviceInformation(iface->DeviceHandle, &device);
-    if (!NT_SUCCESS(st)) return st;
+    if (!NT_SUCCESS(st)) { RP_LOG("GetDeviceInformation failed 0x%08lx\n", st); return st; }
     RP_LOG("Windows resources received; translated list present=%u\n", device.TranslatedResourceList != NULL);
     RtlZeroMemory(&a->Display, sizeof(a->Display));
     st = iface->DxgkCbAcquirePostDisplayOwnership(iface->DeviceHandle, &a->Display);
     if (!NT_SUCCESS(st)) { RP_LOG("POST handoff failed: 0x%08lx\n", st); return st; }
+    RP_LOG("POST handoff width=%lu height=%lu pitch=%lu format=%u target=%lu acpi=%lu\n",
+        a->Display.Width, a->Display.Height, a->Display.Pitch, (UINT)a->Display.ColorFormat,
+        a->Display.TargetId, a->Display.AcpiId);
     if (!rp_layout(a->Display.Width, a->Display.Height, a->Display.Pitch, &bytes) ||
         a->Display.PhysicAddress.QuadPart <= 0 || (a->Display.PhysicAddress.QuadPart & 3) ||
         (ULONGLONG)a->Display.PhysicAddress.QuadPart > MAXULONGLONG - bytes ||
@@ -151,10 +169,11 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     /* Map only the OS-owned POST framebuffer. The firmware must reserve this
        region throughout ownership. No user-controlled address or MMIO IOCTL exists. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
-    if (!a->Framebuffer) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!a->Framebuffer) { RP_LOG("Framebuffer mapping failed bytes=%llu\n", (ULONGLONG)bytes); return STATUS_INSUFFICIENT_RESOURCES; }
     a->FramebufferBytes = bytes;
     a->Shadow.data = ExAllocatePool2(POOL_FLAG_NON_PAGED, bytes, RP_POOL_TAG);
     if (!a->Shadow.data) {
+        RP_LOG("Shadow allocation failed bytes=%llu\n", (ULONGLONG)bytes);
         MmUnmapIoSpace(a->Framebuffer, bytes); a->Framebuffer = NULL; a->FramebufferBytes = 0;
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -193,12 +212,24 @@ NTSTATUS NTAPI RpReleasePost(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targe
 {
     RP_ADAPTER *a = context;
     if (!a || !info || target != 0) return STATUS_INVALID_PARAMETER;
+    RtlZeroMemory(info, sizeof(*info));
+    if (!RpEnter(a)) return STATUS_DEVICE_NOT_READY;
+    /* Keep the firmware-configured pipeline enabled and return our logical target.
+       No native power-down was performed, so do not invent an HDMI reset. */
+    a->Visible = TRUE;
+    a->AdapterPower = a->MonitorPower = PowerDeviceD0;
+    RpBlank(a);
     *info = a->Display;
+    info->TargetId = 0;
+    RP_LOG("ReleasePost width=%lu height=%lu target=0 acpi=%lu\n",
+        info->Width, info->Height, info->AcpiId);
+    RpLeave(a);
     return RpStop(a);
 }
 NTSTATUS NTAPI RpChildren(PVOID context, PDXGK_CHILD_DESCRIPTOR desc, ULONG size)
 {
-    UNREFERENCED_PARAMETER(context);
+    RP_ADAPTER *a = context;
+    if (!a) return STATUS_INVALID_PARAMETER;
     if (!desc || size < 2 * sizeof(*desc)) return STATUS_BUFFER_TOO_SMALL;
     RtlZeroMemory(desc, size);
     desc[0].ChildDeviceType = TypeVideoOutput;
@@ -206,6 +237,7 @@ NTSTATUS NTAPI RpChildren(PVOID context, PDXGK_CHILD_DESCRIPTOR desc, ULONG size
     desc[0].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_HDMI;
     desc[0].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
     desc[0].ChildUid = 0;
+    desc[0].AcpiUid = a->Display.AcpiId;
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpChildStatus(PVOID context, PDXGK_CHILD_STATUS status, BOOLEAN nonDestructive)
@@ -225,19 +257,24 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
 {
     DXGK_DRIVERCAPS *caps;
     UNREFERENCED_PARAMETER(context);
-    if (!info || info->Type != DXGKQAITYPE_DRIVERCAPS) return STATUS_NOT_SUPPORTED;
+    if (!info) return STATUS_INVALID_PARAMETER;
+    RP_LOG("QueryAdapterInfo type=%u outputBytes=%lu\n", (UINT)info->Type, info->OutputDataSize);
+    if (info->Type != DXGKQAITYPE_DRIVERCAPS) return STATUS_NOT_SUPPORTED;
     if (!info->pOutputData || info->OutputDataSize < sizeof(*caps)) return STATUS_BUFFER_TOO_SMALL;
     caps = info->pOutputData;
     RtlZeroMemory(caps, sizeof(*caps));
     caps->HighestAcceptableAddress.QuadPart = MAXLONGLONG;
     caps->MaxPointerWidth = caps->MaxPointerHeight = 0;
     caps->SupportNonVGA = TRUE;
+    /* WDDMVersion is reserved for interfaces >= WIN7 per the detailed WDK API
+       page. Keep it zero, rather than guessing from the conflicting feature table. */
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
 {
     RP_ADAPTER *a = context;
     RP_RECT full;
+    RP_LOG("Power uid=%lu state=%u action=%u\n", uid, (UINT)power, (UINT)action);
     if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) return STATUS_INVALID_PARAMETER;
     if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) return STATUS_INVALID_PARAMETER;
     /* Physical adapter suspend is not implemented. Do not report it as working.
@@ -252,4 +289,4 @@ NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER
     RpLeave(a); return STATUS_SUCCESS;
 }
 VOID NTAPI RpReset(PVOID context) { UNREFERENCED_PARAMETER(context); }
-VOID NTAPI RpUnload(VOID) { }
+VOID NTAPI RpUnload(VOID) { RP_LOG("Unload\n"); RpTraceShutdown(); }
