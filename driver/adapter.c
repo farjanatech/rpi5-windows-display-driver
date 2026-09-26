@@ -113,6 +113,15 @@ static VOID RpResolveEdidSignal(RP_ADAPTER *a)
     if (!a) return;
     a->SignalFromEdid = FALSE;
     RtlZeroMemory(&a->Signal, sizeof(a->Signal));
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        RpWriteStartDword(key, L"Rpi5DisplayEdidBytes", a->EdidValid ? a->EdidBytes : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayTimingFromEdid", 0);
+        RpWriteStartDword(key, L"Rpi5DisplayRefreshMilliHz", 0);
+        RpWriteStartDword(key, L"Rpi5DisplayPixelRateHz", 0);
+        RpWriteStartDword(key, L"Rpi5DisplayHTotal", 0);
+        RpWriteStartDword(key, L"Rpi5DisplayVTotal", 0);
+        ZwClose(key);
+    }
     if (!a->EdidValid ||
         !rp_edid_match_timing(a->Edid, a->EdidBytes, a->Display.Width, a->Display.Height, &timing)) {
         RP_LOG("EDID contains no progressive detailed timing matching POST %lux%lu; timing remains unspecified\n",
