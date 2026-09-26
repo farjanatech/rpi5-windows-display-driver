@@ -318,7 +318,7 @@ NTSTATUS APIENTRY RpControlInterrupt(
 
 NTSTATUS APIENTRY RpGetScanLine(
     CONST HANDLE context,
-    PDXGKARG_GETSCANLINE scan)
+    DXGKARG_GETSCANLINE *scan)
 {
     RP_ADAPTER *a = (RP_ADAPTER *)context;
     LONG64 last;
