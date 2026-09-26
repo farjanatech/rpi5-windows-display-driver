@@ -1,6 +1,6 @@
 # Physical validation gates
 
-Status: **no physical Pi test results are recorded by the initial implementation**. The tests below are required work, not completed checkmarks. Hosted CI is a build/test host, not the Pi.
+Status: **the 0.1.7 firmware-framebuffer path has a recorded working desktop baseline; the 0.1.8 timing/EDID path is not yet hardware-validated.** Hosted CI is a build/test host, not the Pi. Unchecked items below remain required work.
 
 ## Baseline record
 
@@ -29,6 +29,21 @@ Verify firmware framebuffer reservation/lifetime and its memory/cache layout on 
 - [ ] Online rollback and the independently tested recovery route work.
 
 Passing these establishes only a tested prototype for the recorded configuration.
+
+## M3.1: 0.1.8 real timing and EDID
+
+Use UEFI exp0.7 from `farjanatech/rpi5-uefi#9` and driver PR #7 while keeping exp0.6 + 0.1.7 available for recovery.
+
+- [ ] exp0.7 boots with Wi-Fi, fan, NVMe, microSD and USB behavior unchanged from the exp0.6 baseline.
+- [ ] Driver 0.1.8 starts with ProblemCode 0 and logs an accepted volatile firmware handoff.
+- [ ] The logged firmware display ID matches the firmware-selected output; no 0/1 display-ID assumption is used.
+- [ ] Windows Advanced Display shows a numeric refresh rate rather than `Unknown`.
+- [ ] `DxgkDdiQueryDeviceDescriptor` exposes the connected monitor's checksum-valid EDID.
+- [ ] Reported pixel clock / totals derive to the displayed refresh rate; no hard-coded 60 Hz path is present.
+- [ ] Removing/invalidating the handoff falls back to the 0.1.7 unspecified-timing behavior without losing the desktop.
+- [ ] Only after the timing checks pass, rerun TestUFO/MotionMark and collect a fresh support bundle.
+
+Passing M3.1 validates metadata/pacing inputs for the recorded monitor/mode; it does not establish hardware acceleration or native HDMI/VSync programming.
 
 ## M5: reliability before daily use
 
