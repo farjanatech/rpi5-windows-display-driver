@@ -3,6 +3,7 @@
 param([ValidateSet('Debug','Release')][string]$Configuration = 'Debug', [switch]$TestSign)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'The build host requires PowerShell 7 or later.' }
 $Root = Split-Path $PSScriptRoot -Parent
 $Tools = Join-Path $Root '.tools'
 $Out = Join-Path $Root "out/ARM64/$Configuration"
@@ -11,10 +12,7 @@ New-Item $Tools,$Out,$Package -ItemType Directory -Force | Out-Null
 Get-ChildItem $Package -File | Remove-Item
 Start-Transcript -Path (Join-Path $Out 'build.log') -Force | Out-Null
 $cert = $null; $rootImported = $false
-function Run([string]$Exe,[string[]]$ArgumentList) {
-    & $Exe @ArgumentList 2>&1 | Tee-Object -FilePath (Join-Path $Out 'native.log') -Append
-    if ($LASTEXITCODE -ne 0) { throw "$Exe exited with $LASTEXITCODE" }
-}
+. (Join-Path $PSScriptRoot 'Run-Checked.ps1')
 function Find-One([string]$Dir,[string]$Name,[string]$Pattern='.') {
     $found = @(Get-ChildItem $Dir -Filter $Name -File -Recurse | Where-Object FullName -Match $Pattern)
     if ($found.Count -ne 1) { throw "Expected one $Name ($Pattern), found $($found.Count) under $Dir" }
@@ -31,7 +29,7 @@ try {
         $id = $spec.Id.ToLowerInvariant(); $version = $spec.Version
         $dir = Join-Path $Tools "$id.$version"; $nupkg = "$dir.nupkg"
         $uri = "https://api.nuget.org/v3-flatcontainer/$id/$version/$id.$version.nupkg"
-        if (!(Test-Path $nupkg)) { Invoke-WebRequest -Uri $uri -OutFile $nupkg }
+        if (!(Test-Path $nupkg)) { Invoke-WebRequest -Uri $uri -OutFile $nupkg -TimeoutSec 120 }
         $hash = (Get-FileHash $nupkg -Algorithm SHA512).Hash
         if ($hash -cne $spec.Hash) { throw "Pinned NuGet content hash mismatch: $id" }
         Run 'nuget.exe' @('verify','-All',$nupkg,'-NonInteractive','-Verbosity','quiet')
@@ -46,15 +44,17 @@ try {
     $wdk = Join-Path $Tools 'microsoft.windows.wdk.arm64.10.0.26100.6584'
     $wdkHost = Join-Path $Tools 'microsoft.windows.wdk.x64.10.0.26100.6584'
     $sdk = Join-Path $Tools 'microsoft.windows.sdk.cpp.10.0.26100.1'
+    Write-Host 'PHASE: compile and link'
     . (Join-Path $PSScriptRoot 'Compile-Driver.ps1') -Root $Root -Out $Out -Wdk $wdk -Sdk $sdk -Configuration $Configuration
     $sys = Join-Path $Package 'Rpi5Display.sys'
     Copy-Item (Join-Path $Root 'package/Rpi5Display.inf') $Package -Force
     $infverif = Find-One $wdkHost 'infverif.exe' '[\\/]x64[\\/]'
-    # Inf2Cat is distributed as an x86 host tool in this WDK; it still catalogs ARM64 targets.
     $inf2cat = Find-One $wdkHost 'inf2cat.exe'
+    Write-Host 'PHASE: INF validation'
     Run $infverif @('/w','/v',(Join-Path $Package 'Rpi5Display.inf'))
     $signTool = Find-One $sdk 'signtool.exe' '[\\/]x64[\\/]'
     if ($TestSign) {
+        Write-Host 'PHASE: create disposable lab signing identity'
         $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Rpi5Display CI LAB ONLY' `
             -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 3072 `
             -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddMonths(1)
@@ -63,16 +63,21 @@ try {
         Write-Host "LAB certificate thumbprint (pin independently from this run): $($cert.Thumbprint)"
         Run $signTool @('sign','/fd','SHA256','/s','My','/sha1',$cert.Thumbprint,$sys)
     }
+    Write-Host 'PHASE: catalog generation'
     Run $inf2cat @("/driver:$Package",'/os:10_CO_ARM64','/verbose')
     if ($TestSign) {
         $cat = Join-Path $Package 'Rpi5Display.cat'
         Run $signTool @('sign','/fd','SHA256','/s','My','/sha1',$cert.Thumbprint,$cat)
-        Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+        Write-Host 'PHASE: temporary build-host trust for signature validation'
+        # Bounded developer-tool call instead of an interactive certificate-store cmdlet.
+        # This modifies only the build user's store, and the exact entry is removed below.
         $rootImported = $true
+        Run 'certutil.exe' @('-user','-f','-addstore','Root',$cer)
         Run $signTool @('verify','/pa','/v',$sys)
         Run $signTool @('verify','/pa','/v','/c',$cat,$sys)
     }
     $sourceCommit = (& git -C $Root rev-parse HEAD).Trim()
+    Write-Host "BUILT SOURCE COMMIT: $sourceCommit"
     $files = @{}
     Get-ChildItem $Package -File | ForEach-Object { $files[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
     $manifest = [ordered]@{
@@ -84,6 +89,7 @@ try {
     $manifestPath = Join-Path $Out 'manifest.json'
     $manifest | ConvertTo-Json -Depth 8 | Set-Content $manifestPath -Encoding utf8
     if ($TestSign) {
+        Write-Host 'PHASE: authenticate and test package metadata'
         . (Join-Path $PSScriptRoot 'Lab-Common.ps1')
         Initialize-LabCrypto
         $content = [Security.Cryptography.Pkcs.ContentInfo]::new([IO.File]::ReadAllBytes($manifestPath))
