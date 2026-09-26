@@ -67,7 +67,14 @@ foreach ($device in $devices) {
                 TargetId=$key.GetValue('Rpi5DisplayPostTargetId',$null);
                 AcpiId=$key.GetValue('Rpi5DisplayPostAcpiId',$null);
                 PhysicalAddressLow=$key.GetValue('Rpi5DisplayPostPhysLow',$null);
-                PhysicalAddressHigh=$key.GetValue('Rpi5DisplayPostPhysHigh',$null)
+                PhysicalAddressHigh=$key.GetValue('Rpi5DisplayPostPhysHigh',$null);
+                FirmwareTimingValid=$key.GetValue('Rpi5DisplayFirmwareTimingValid',$null);
+                FirmwareEdidValid=$key.GetValue('Rpi5DisplayFirmwareEdidValid',$null);
+                FirmwareVariableAttributes=$key.GetValue('Rpi5DisplayFirmwareVariableAttributes',$null);
+                FirmwareClockKHz=$key.GetValue('Rpi5DisplayFirmwareClockKHz',$null);
+                FirmwareHTotal=$key.GetValue('Rpi5DisplayFirmwareHTotal',$null);
+                FirmwareVTotal=$key.GetValue('Rpi5DisplayFirmwareVTotal',$null);
+                FirmwareEdidBlocks=$key.GetValue('Rpi5DisplayFirmwareEdidBlocks',$null)
             }
         } finally { $key.Dispose() }
     }
