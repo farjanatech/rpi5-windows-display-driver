@@ -74,7 +74,16 @@ foreach ($device in $devices) {
                 FirmwareClockKHz=$key.GetValue('Rpi5DisplayFirmwareClockKHz',$null);
                 FirmwareHTotal=$key.GetValue('Rpi5DisplayFirmwareHTotal',$null);
                 FirmwareVTotal=$key.GetValue('Rpi5DisplayFirmwareVTotal',$null);
-                FirmwareEdidBlocks=$key.GetValue('Rpi5DisplayFirmwareEdidBlocks',$null)
+                FirmwareEdidBlocks=$key.GetValue('Rpi5DisplayFirmwareEdidBlocks',$null);
+                VSyncAdvertised=$key.GetValue('Rpi5DisplayVSyncAdvertised',$null);
+                VSyncHardwareReady=$key.GetValue('Rpi5DisplayVSyncHardwareReady',$null);
+                PixelValveIndex=$key.GetValue('Rpi5DisplayPixelValveIndex',$null);
+                PixelValvePhysLow=$key.GetValue('Rpi5DisplayPixelValvePhysLow',$null);
+                PixelValvePhysHigh=$key.GetValue('Rpi5DisplayPixelValvePhysHigh',$null);
+                VSyncInterruptsLow=$key.GetValue('Rpi5DisplayVSyncInterruptsLow',$null);
+                VSyncInterruptsHigh=$key.GetValue('Rpi5DisplayVSyncInterruptsHigh',$null);
+                ScanLineQueriesLow=$key.GetValue('Rpi5DisplayScanLineQueriesLow',$null);
+                ScanLineQueriesHigh=$key.GetValue('Rpi5DisplayScanLineQueriesHigh',$null)
             }
         } finally { $key.Dispose() }
     }
