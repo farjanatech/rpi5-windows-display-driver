@@ -25,6 +25,8 @@ jobs:
           ./out/framebuffer_test
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/registration_test.c -o out/registration_test
           ./out/registration_test
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/display_handoff_test.c -o out/display_handoff_test
+          ./out/display_handoff_test
       - name: Archive the exact reviewed source
         run: git archive --format=zip --output=out/source.zip HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

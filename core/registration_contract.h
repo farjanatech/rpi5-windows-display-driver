@@ -11,6 +11,8 @@
     X(DxgkDdiStopDevice, RpStop) \
     X(DxgkDdiRemoveDevice, RpRemove) \
     X(DxgkDdiDispatchIoRequest, RpDispatchIoRequest) \
+    X(DxgkDdiInterruptRoutine, RpInterrupt) \
+    X(DxgkDdiDpcRoutine, RpDpc) \
     X(DxgkDdiQueryChildRelations, RpChildren) \
     X(DxgkDdiQueryChildStatus, RpChildStatus) \
     X(DxgkDdiQueryDeviceDescriptor, RpDescriptor) \
@@ -18,6 +20,8 @@
     X(DxgkDdiResetDevice, RpReset) \
     X(DxgkDdiUnload, RpUnload) \
     X(DxgkDdiQueryAdapterInfo, RpCaps) \
+    X(DxgkDdiSetPointerPosition, RpPointerPosition) \
+    X(DxgkDdiSetPointerShape, RpPointerShape) \
     X(DxgkDdiIsSupportedVidPn, RpIsSupported) \
     X(DxgkDdiEnumVidPnCofuncModality, RpEnumModes) \
     X(DxgkDdiRecommendFunctionalVidPn, RpRecommendFunctional) \

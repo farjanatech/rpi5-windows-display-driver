@@ -15,15 +15,33 @@ BOOLEAN RpPathValid(const D3DKMDT_VIDPN_PRESENT_PATH *p, BOOLEAN pinned)
 }
 static VOID RpSignal(RP_ADAPTER *a, D3DKMDT_VIDEO_SIGNAL_INFO *s)
 {
+    ULONGLONG pixelHz;
+    ULONGLONG frameTotal;
     RtlZeroMemory(s, sizeof(*s));
     s->VideoStandard = D3DKMDT_VSS_OTHER;
-    s->ActiveSize.cx = s->TotalSize.cx = a->Display.Width;
-    s->ActiveSize.cy = s->TotalSize.cy = a->Display.Height;
-    /* POST does not report timings. Do not invent a physical refresh rate. */
+    s->ActiveSize.cx = a->Display.Width;
+    s->ActiveSize.cy = a->Display.Height;
+    s->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
+
+    if (a->FirmwareTimingValid) {
+        pixelHz = (ULONGLONG)a->FirmwareDisplay.timing.clock_khz * 1000ULL;
+        frameTotal = (ULONGLONG)a->FirmwareDisplay.timing.htotal *
+            a->FirmwareDisplay.timing.vtotal;
+        s->TotalSize.cx = a->FirmwareDisplay.timing.htotal;
+        s->TotalSize.cy = a->FirmwareDisplay.timing.vtotal;
+        s->PixelRate = pixelHz;
+        s->HSyncFreq.Numerator = (UINT)pixelHz;
+        s->HSyncFreq.Denominator = a->FirmwareDisplay.timing.htotal;
+        s->VSyncFreq.Numerator = (UINT)pixelHz;
+        s->VSyncFreq.Denominator = (UINT)frameTotal;
+        return;
+    }
+
+    s->TotalSize = s->ActiveSize;
+    /* Preserve the 0.1.7 fallback if exp0.7 handoff is absent or rejected. */
     s->VSyncFreq.Numerator = s->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
     s->HSyncFreq.Numerator = s->HSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
     s->PixelRate = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    s->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 }
 static BOOLEAN RpSourceValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_SOURCE_MODE *m)
 {
@@ -39,9 +57,16 @@ static BOOLEAN RpSourceValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_SOURCE_MODE *m)
 }
 static BOOLEAN RpTargetValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_TARGET_MODE *m)
 {
-    return m && m->VideoSignalInfo.ActiveSize.cx == a->Display.Width &&
-        m->VideoSignalInfo.ActiveSize.cy == a->Display.Height &&
-        m->VideoSignalInfo.ScanLineOrdering == D3DDDI_VSSLO_PROGRESSIVE;
+    if (!m || m->VideoSignalInfo.ActiveSize.cx != a->Display.Width ||
+        m->VideoSignalInfo.ActiveSize.cy != a->Display.Height ||
+        m->VideoSignalInfo.ScanLineOrdering != D3DDDI_VSSLO_PROGRESSIVE) return FALSE;
+    if (a->FirmwareTimingValid) {
+        ULONGLONG pixelHz = (ULONGLONG)a->FirmwareDisplay.timing.clock_khz * 1000ULL;
+        if (m->VideoSignalInfo.TotalSize.cx != a->FirmwareDisplay.timing.htotal ||
+            m->VideoSignalInfo.TotalSize.cy != a->FirmwareDisplay.timing.vtotal ||
+            m->VideoSignalInfo.PixelRate != pixelHz) return FALSE;
+    }
+    return TRUE;
 }
 /* Replaces only an unpinned, non-pivot mode set. Retains the OS-assigned mode Id. */
 static NTSTATUS RpSourceSet(RP_ADAPTER *a, D3DKMDT_HVIDPN v, const DXGK_VIDPN_INTERFACE *vi, BOOLEAN pivot)

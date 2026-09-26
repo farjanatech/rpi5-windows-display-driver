@@ -1,19 +1,21 @@
-# Rpi5Display 0.1.2 — CMD installer and diagnostic logs
+# Rpi5Display 0.1.8 candidate — CMD installer and diagnostic logs
 
-**Experimental Windows 11 ARM64 display-only driver. A successful 0.1.2 physical startup has not yet been recorded. This is not a full accelerated graphics driver or a guarantee of a working display. A bad kernel driver can black-screen or crash Windows. Use a restorable test image and working independent recovery/debug access.**
+**Experimental Windows 11 ARM64 display-only driver. Version 0.1.7 is the hardware-working framebuffer baseline; 0.1.8 adds real firmware timing/EDID consumption and is not yet hardware-validated. This is not a full accelerated graphics driver. A bad kernel driver can black-screen or crash Windows. Use a restorable test image and working independent recovery/debug access.**
 
-## 0.1.2 registration fix
+## 0.1.8 timing/EDID candidate
 
-The previous build omitted `DxgkDdiDispatchIoRequest`. The new build registers that required callback and rejects unsupported legacy requests without accessing their payloads. The existing display-only interface version is retained; this is not a WDDM/graphics-acceleration upgrade. The first trace records compiled/requested interface values, table size, Windows build and dispatch offset. `before/` and `after/` contain `platform.json` with a `WindowsGraphicsFiles` version/hash section.
+This candidate keeps the 0.1.7 present/copy path unchanged. When paired with Raspberry Pi 5 UEFI exp0.7, it reads the volatile `Rpi5DisplayHandoff` runtime variable, validates the exact POST geometry and firmware timing, returns the monitor EDID through `DxgkDdiQueryDeviceDescriptor`, and reports the real pixel clock / totals / HSync / VSync instead of inventing 60 Hz. If the handoff is absent or invalid, it deliberately falls back to the 0.1.7 unspecified-timing behavior.
 
-Preflight now checks hibernation before reporting success. This check is read-only and does not undo completed power preparation. Use this package in a **new extracted folder**, not mixed with 0.1.1 files. No additional disk/power/security preparation is required just because the driver version changed. Runtime startup and physical output still need to be verified on the Pi.
+The paired firmware candidate is tracked in `farjanatech/rpi5-uefi#9`. Test exp0.7 first with the exp0.6 recovery image available, then install this driver. Confirm ProblemCode 0, a real Advanced Display refresh rate and the correct monitor EDID before using TestUFO/MotionMark as performance evidence.
+
+Preflight remains read-only. Use this package in a **new extracted folder**, never mixed with files from an earlier driver package. Existing verified disk/power/security preparation does not need to be repeated just because the driver version changed.
 
 ## Extract and start
 
 Download `Rpi5Display-CMD-Installer-<commit>` from a successful GitHub Actions run in `farjanatech/rpi5-windows-display-driver`. Compare the ZIP SHA-256 with the trusted run's artifact digest. A checksum inside an untrusted download is not an independent trust anchor.
 
 ```cmd
-certutil -hashfile Rpi5Display-0.1.2-CMD-Installer.zip SHA256
+certutil -hashfile Rpi5Display-0.1.8-CMD-Installer.zip SHA256
 ```
 
 Extract **the entire ZIP** to a new local folder, for example `C:\Rpi5Display-0.1.2`. Do not run CMD files inside the ZIP viewer or separate them from their support files. Run on the Windows Pi, not the x64 PC used to download it.

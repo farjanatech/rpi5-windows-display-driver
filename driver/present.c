@@ -3,7 +3,8 @@
 VOID RpFlush(RP_ADAPTER *a, RP_RECT rect)
 {
     LONG y;
-    if (!a->Visible || a->AdapterPower != PowerDeviceD0 || a->MonitorPower != PowerDeviceD0 || a->CrashDisplay) return;
+    if (!a->Framebuffer || !a->Shadow.data || !a->Visible ||
+        a->AdapterPower != PowerDeviceD0 || a->MonitorPower != PowerDeviceD0 || a->CrashDisplay) return;
     for (y = rect.top; y < rect.bottom; ++y) {
         SIZE_T offset = (SIZE_T)y * a->Display.Pitch + (SIZE_T)rect.left * 4;
         WRITE_REGISTER_BUFFER_ULONG((PULONG)((PUCHAR)a->Framebuffer + offset),
