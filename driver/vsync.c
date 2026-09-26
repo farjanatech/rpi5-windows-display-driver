@@ -283,8 +283,12 @@ NTSTATUS APIENTRY RpControlInterrupt(
     ULONG enable;
 
     if (!a) return STATUS_INVALID_PARAMETER;
-    if (interruptType != DXGK_INTERRUPT_DISPLAYONLY_VSYNC) {
-        return STATUS_NOT_SUPPORTED;
+    /*
+     * The legacy ControlInterrupt DDI requests CRTC_VSYNC. KMDODs report the
+     * corresponding hardware event back with DISPLAYONLY_VSYNC.
+     */
+    if (interruptType != DXGK_INTERRUPT_CRTC_VSYNC) {
+        return STATUS_NOT_IMPLEMENTED;
     }
     if (!a->VSyncHardwareReady || !a->PixelValveRegs ||
         !InterlockedCompareExchange(&a->Active, 0, 0)) {
@@ -307,7 +311,7 @@ NTSTATUS APIENTRY RpControlInterrupt(
     }
     KeMemoryBarrier();
 
-    RP_LOG("ControlInterrupt DISPLAYONLY_VSYNC enable=%u pv=%lu\n",
+    RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu\n",
            enableInterrupt, a->PixelValveIndex);
     return STATUS_SUCCESS;
 }
@@ -346,8 +350,8 @@ NTSTATUS APIENTRY RpGetScanLine(
         return STATUS_DEVICE_NOT_READY;
     }
 
-    scan->ScanLine = line;
     scan->InVerticalBlank = inBlank ? TRUE : FALSE;
+    scan->ScanLine = inBlank ? 0u : line;
     InterlockedIncrement64(&a->ScanLineQueries);
     return STATUS_SUCCESS;
 }
