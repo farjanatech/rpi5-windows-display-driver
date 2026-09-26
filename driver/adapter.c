@@ -349,27 +349,48 @@ NTSTATUS NTAPI RpDescriptor(PVOID context, ULONG uid, PDXGK_DEVICE_DESCRIPTOR de
 }
 NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *info)
 {
-    DXGK_DRIVERCAPS *caps;
     UNREFERENCED_PARAMETER(context);
     if (!info) return STATUS_INVALID_PARAMETER;
     RP_LOG("QueryAdapterInfo type=%u outputBytes=%lu\n", (UINT)info->Type, info->OutputDataSize);
-    if (info->Type != DXGKQAITYPE_DRIVERCAPS) return STATUS_NOT_SUPPORTED;
-    if (!info->pOutputData || info->OutputDataSize < sizeof(*caps)) return STATUS_BUFFER_TOO_SMALL;
-    caps = info->pOutputData;
-    RtlZeroMemory(caps, sizeof(*caps));
-    caps->HighestAcceptableAddress.QuadPart = -1;
-    caps->MaxPointerWidth = caps->MaxPointerHeight = 0;
-    /* KMDOD is a WDDM 1.2 display-only model. Microsoft's reference KMDOD
-       explicitly reports v1.2 here; leaving this zero caused dxgkrnl to stop
-       the adapter immediately after QueryAdapterInfo on Windows 11 ARM64. */
-    caps->WDDMVersion = DXGKDDI_WDDMv1_2;
-    caps->SupportNonVGA = TRUE;
-    /* Rotation remains unadvertised until the software rotation path exists. */
-    caps->SupportSmoothRotation = FALSE;
-    RP_LOG("DriverCaps WDDM=%u NonVGA=%u SmoothRotation=%u HighestAddress=0x%llx\n",
-        (UINT)caps->WDDMVersion, caps->SupportNonVGA, caps->SupportSmoothRotation,
-        (ULONGLONG)caps->HighestAcceptableAddress.QuadPart);
-    return STATUS_SUCCESS;
+
+    switch (info->Type) {
+    case DXGKQAITYPE_DRIVERCAPS:
+    {
+        DXGK_DRIVERCAPS *caps;
+        if (!info->pOutputData || info->OutputDataSize < sizeof(*caps)) return STATUS_BUFFER_TOO_SMALL;
+        caps = info->pOutputData;
+        RtlZeroMemory(caps, sizeof(*caps));
+        caps->HighestAcceptableAddress.QuadPart = -1;
+        caps->MaxPointerWidth = caps->MaxPointerHeight = 0;
+        /* KMDOD is a WDDM 1.2 display-only model. Microsoft's reference KMDOD
+           explicitly reports v1.2 here. */
+        caps->WDDMVersion = DXGKDDI_WDDMv1_2;
+        caps->SupportNonVGA = TRUE;
+        /* Rotation remains unadvertised until the software rotation path exists. */
+        caps->SupportSmoothRotation = FALSE;
+        RP_LOG("DriverCaps WDDM=%u NonVGA=%u SmoothRotation=%u HighestAddress=0x%llx\n",
+            (UINT)caps->WDDMVersion, caps->SupportNonVGA, caps->SupportSmoothRotation,
+            (ULONGLONG)caps->HighestAcceptableAddress.QuadPart);
+        return STATUS_SUCCESS;
+    }
+
+    case DXGKQAITYPE_64BITONLYCAPS:
+    {
+        DXGK_64_BIT_ONLY_CAPS *caps64;
+        if (!info->pOutputData || info->OutputDataSize < sizeof(*caps64)) return STATUS_BUFFER_TOO_SMALL;
+        caps64 = info->pOutputData;
+        /* There is no user-mode rendering component in this KMDOD prototype.
+           Report no 64-bit-only UMD requirement and keep every reserved bit zero.
+           Windows 11 ARM64 queries this capability during adapter start. */
+        RtlZeroMemory(caps64, sizeof(*caps64));
+        RP_LOG("64BitOnlyCaps SupportsOnly64Bit=0 bytes=%lu\n", info->OutputDataSize);
+        return STATUS_SUCCESS;
+    }
+
+    default:
+        RP_LOG("QueryAdapterInfo unsupported type=%u\n", (UINT)info->Type);
+        return STATUS_NOT_SUPPORTED;
+    }
 }
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
 {
