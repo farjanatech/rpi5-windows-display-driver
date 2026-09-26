@@ -168,3 +168,11 @@ function Get-LabInstallDisposition {
     if (!$Selected) { return 'StagedOnly' }
     return 'CheckSelectedBinary'
 }
+
+# The caller never changes power policy. An unreadable value is not a pass.
+function Assert-LabHibernateDisabled {
+    $value = Get-ItemPropertyValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name HibernateEnabled -ErrorAction Stop
+    if ($null -eq $value -or $value -isnot [int] -or $value -ne 0) {
+        throw 'Hibernation is enabled or could not be confirmed disabled. Installation and preflight are blocked; no power settings were changed.'
+    }
+}

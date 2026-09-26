@@ -39,6 +39,7 @@ $previousInf = $previous.Inf
 Write-Host "Target: $($device.InstanceId); previous INF: $previousInf; Code Integrity options: $ci"
 if (!$previousInf) { Write-Warning 'The target is currently unbound. Verify its boot-display association and recovery route before installation.' }
 Write-Warning 'Experimental display-only code. Physical sleep/resume, native mode setting and acceleration are not supported or hardware-validated.'
+Assert-LabHibernateDisabled
 if (!$Install) {
     Write-Host 'PREFLIGHT ONLY: no driver, trust, registry, power or boot settings changed.'
     return
@@ -47,8 +48,8 @@ Assert-LabAdministrator
 if (!$RecoveryConfirmed -or !$DiagnosticsConfirmed -or !$PowerPolicyConfirmed -or !$AcknowledgeUntestedHardware) {
     throw 'Confirm the restored-image/recovery route, independent diagnostics, disabled sleep/hibernate policy and untested-hardware risk explicitly. See docs/LAB_INSTALL.md.'
 }
-$hibernate = Get-ItemPropertyValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name HibernateEnabled -ErrorAction Stop
-if ($hibernate -ne 0) { throw 'Hibernation must already be disabled. This script does not change power policy.' }
+# Recheck immediately before an installation in case policy changed since preflight.
+Assert-LabHibernateDisabled
 if (!$PSCmdlet.ShouldProcess($DeviceInstanceId, 'Trust the pinned LAB certificate, enable this device and install the authenticated experimental package')) { return }
 $session = New-LabProtectedDirectory -Category Lab
 Copy-Item (Join-Path $ArtifactRoot 'package') $session -Recurse
