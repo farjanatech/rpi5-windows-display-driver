@@ -26,6 +26,35 @@ try {
         & $cmd '/?'
         if ($LASTEXITCODE -ne 0) { throw "CMD launcher help failed: $name" }
     }
+    # Exercise the complete failure-log path through inbox Windows PowerShell 5.1.
+    # The x64 build host deliberately fails the Pi-device guard. Redirect ProgramData
+    # to this disposable test directory; no real device or driver is modified.
+    if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -eq 'X64') {
+        $classic = Join-Path $dir 'classic-preflight.ps1'
+        @'
+param([string]$Root,[string]$Data)
+$ErrorActionPreference='Stop'
+$env:ProgramData=$Data
+. (Join-Path $Root 'Lab-Common.ps1')
+$pin=Import-PowerShellDataFile (Join-Path $Root 'Package-Pin.psd1')
+$null=Test-LabManifest $Root $pin.Commit $pin.Thumbprint
+Write-Host 'CLASSIC_POWERSHELL_MANIFEST_VERIFIED'
+& (Join-Path $Root 'Run-Lab.ps1') -Action Preflight
+exit 99
+'@ | Set-Content $classic -Encoding utf8
+        $isolated=Join-Path $dir 'isolated-programdata'
+        New-Item -ItemType Directory -Path $isolated | Out-Null
+        $check=Invoke-LabCommand $p @('-NoProfile','-ExecutionPolicy','Bypass','-File',$classic,'-Root',$ArtifactRoot,'-Data',$isolated) $dir 'classic-preflight' 180
+        if ($check.ExitCode -ne 1 -or $check.TimedOut -or $check.Error) { throw 'Classic PowerShell negative preflight did not terminate as expected.' }
+        $output=Get-Content (Join-Path $dir 'classic-preflight.stdout.txt') -Raw
+        if ($output -notmatch 'CLASSIC_POWERSHELL_MANIFEST_VERIFIED' -or $output -notmatch 'SUPPORT BUNDLE:') { throw 'Classic PowerShell manifest/failure-bundle path failed.' }
+        $reports=@(Get-ChildItem $isolated -Recurse -Filter result.json -File)
+        if ($reports.Count -ne 1) { throw 'Expected one failure result report.' }
+        $report=Get-Content $reports[0].FullName -Raw | ConvertFrom-Json
+        if ($report.Outcome -notmatch 'Expected exactly one present ACPI' -or $report.ExitCode -ne 1) { throw 'Preflight failed for the wrong reason.' }
+        if (@(Get-ChildItem $isolated -Recurse -Filter *.zip -File).Count -ne 1) { throw 'Failure logs were not archived.' }
+        Write-Host 'PASS: classic PowerShell signature verification, real wrong-target rejection and failure support ZIP.'
+    }
     # Exercise the new trace capture with a USER-MODE synthetic provider, NOT the driver.
     # The distinct GUID prevents these events from being mistaken for hardware evidence.
     Add-Type -TypeDefinition @'
