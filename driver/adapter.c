@@ -366,8 +366,11 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
            explicitly reports v1.2 here. */
         caps->WDDMVersion = DXGKDDI_WDDMv1_2;
         caps->SupportNonVGA = TRUE;
-        /* Rotation remains unadvertised until the software rotation path exists. */
-        caps->SupportSmoothRotation = FALSE;
+        /* Optimized screen-rotation capability is mandatory for WDDM 1.2
+           display-only drivers. This prototype still advertises only the
+           identity rotation in its VidPN path support, so enabling this cap
+           does not add or claim non-identity rotation modes. */
+        caps->SupportSmoothRotation = TRUE;
         RP_LOG("DriverCaps WDDM=%u NonVGA=%u SmoothRotation=%u HighestAddress=0x%llx\n",
             (UINT)caps->WDDMVersion, caps->SupportNonVGA, caps->SupportSmoothRotation,
             (ULONGLONG)caps->HighestAcceptableAddress.QuadPart);
