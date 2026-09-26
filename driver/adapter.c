@@ -34,6 +34,8 @@ typedef enum RP_START_STAGE {
     RpStartCompleted = 8
 } RP_START_STAGE;
 
+static BOOLEAN gRpVSyncRegistrationEnabled = FALSE;
+
 static VOID RpWriteStartDword(HANDLE key, PCWSTR valueName, ULONG value)
 {
     UNICODE_STRING name;
@@ -186,8 +188,20 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     #define RP_BIND_CALLBACK(field, function) init.field = function;
     RP_DOD_CALLBACK_BINDINGS(RP_BIND_CALLBACK)
     #undef RP_BIND_CALLBACK
-    /* A required dispatch entry must exist even when every legacy IOCTL is unsupported.
-       Do not add interrupts, VSync claims, render DDIs or private memory interfaces. */
+
+    /*
+     * Windows requires GetScanLine + ControlInterrupt as a pair when a KMDOD
+     * reports real signal frequencies. Bind the pair only if the exp0.7
+     * runtime handoff is already present and valid at DriverEntry.
+     */
+    gRpVSyncRegistrationEnabled = RpVSyncRegistrationAvailable();
+    if (gRpVSyncRegistrationEnabled) {
+        #define RP_BIND_VSYNC_CALLBACK(field, function) init.field = function;
+        RP_DOD_VSYNC_CALLBACK_BINDINGS(RP_BIND_VSYNC_CALLBACK)
+        #undef RP_BIND_VSYNC_CALLBACK
+    }
+
+    /* A required dispatch entry must exist even when every legacy IOCTL is unsupported. */
     #define RP_CHECK_CALLBACK(field) if (!init.field) { ++missing; RP_LOG("registration missing callback=%s\n", #field); }
     RP_DOD_REQUIRED_ENTRY_CALLBACKS(RP_CHECK_CALLBACK)
     #undef RP_CHECK_CALLBACK
@@ -204,7 +218,8 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
         (ULONG)sizeof(init), (ULONG)sizeof(PVOID),
         (ULONG)FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest),
         os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, status);
-    RP_LOG("registering experimental firmware-framebuffer KMDOD\n");
+    RP_LOG("registering experimental firmware-framebuffer KMDOD vsyncControl=%u\n",
+        gRpVSyncRegistrationEnabled);
     status = DxgkInitializeDisplayOnlyDriver(object, path, &init);
     RP_LOG("DriverEntry version=%s status=0x%08lx\n", RP_DRIVER_VERSION, status);
     if (!NT_SUCCESS(status)) RpTraceShutdown();
@@ -222,7 +237,9 @@ NTSTATUS NTAPI RpAdd(PDEVICE_OBJECT pdo, PVOID *context)
     }
     a = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*a), RP_POOL_TAG);
     if (!a) return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(a, sizeof(*a));
     a->Pdo = pdo;
+    a->VSyncAdvertised = gRpVSyncRegistrationEnabled;
     KeInitializeMutex(&a->Mutex, 0);
     ExInitializeRundownProtection(&a->Rundown);
     *context = a;
@@ -245,7 +262,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         RpRecordStartState(a, RpStartEntered, STATUS_DEVICE_CONFIGURATION_ERROR, NULL, 0);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    if (a->Active || a->Framebuffer) {
+    if (a->Active || a->Framebuffer || a->PixelValveRegs) {
         RpRecordStartState(a, RpStartEntered, STATUS_INVALID_DEVICE_STATE, NULL, 0);
         return STATUS_INVALID_DEVICE_STATE;
     }
@@ -291,9 +308,27 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
     RpRecordStartState(a, RpStartPostValidated, STATUS_SUCCESS, &a->Display, 0);
-    /* Timing/EDID is optional. A missing or invalid firmware handoff must not
-       regress the already hardware-validated 0.1.7 framebuffer path. */
+    /*
+     * Timing/EDID remains optional for the legacy fallback registration. If
+     * DriverEntry advertised VSync control, however, Windows requires real
+     * timing plus working GetScanLine/ControlInterrupt support.
+     */
     RpLoadFirmwareDisplay(a);
+    if (a->VSyncAdvertised) {
+        if (!a->FirmwareTimingValid) {
+            RP_LOG("VSync registration was advertised but firmware timing is unavailable\n");
+            RpRecordStartState(a, RpStartPostValidated,
+                               STATUS_DEVICE_CONFIGURATION_ERROR, &a->Display, 0);
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+        st = RpVSyncInitialize(a, device.TranslatedResourceList);
+        if (!NT_SUCCESS(st)) {
+            RP_LOG("VSync hardware initialization failed 0x%08lx\n", st);
+            RpRecordStartState(a, RpStartPostValidated, st, &a->Display, 0);
+            return st;
+        }
+    }
+
     /* Map only the OS-owned POST framebuffer. Match Microsoft's KMDOD sample:
        prefer write-combining, then retry non-cached if the platform rejects WC. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
@@ -306,6 +341,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     }
     if (!a->Framebuffer) {
         RP_LOG("Framebuffer mapping failed in both cache modes bytes=%llu\n", (ULONGLONG)bytes);
+        RpVSyncShutdown(a);
         RpRecordStartState(a, RpStartPostValidated, STATUS_NO_MEMORY, &a->Display, 0);
         return STATUS_NO_MEMORY;
     }
@@ -315,6 +351,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     if (!a->Shadow.data) {
         RP_LOG("Shadow allocation failed bytes=%llu\n", (ULONGLONG)bytes);
         MmUnmapIoSpace(a->Framebuffer, bytes); a->Framebuffer = NULL; a->FramebufferBytes = 0;
+        RpVSyncShutdown(a);
         RpRecordStartState(a, RpStartFramebufferMapped, STATUS_INSUFFICIENT_RESOURCES, &a->Display, mapMode);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -328,8 +365,9 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     InterlockedExchange(&a->Active, 1);
     *sources = *children = 1;
     RpRecordStartState(a, RpStartCompleted, STATUS_SUCCESS, &a->Display, mapMode);
-    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu; no native hardware programming\n",
-        a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode);
+    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu vsync=%u pv=%lu; no mode programming\n",
+        a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode,
+        a->VSyncHardwareReady, a->PixelValveIndex);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpStop(PVOID context)
@@ -337,6 +375,7 @@ NTSTATUS NTAPI RpStop(PVOID context)
     RP_ADAPTER *a = context;
     if (!a) return STATUS_INVALID_PARAMETER;
     InterlockedExchange(&a->Active, 0);
+    RpVSyncShutdown(a);
     if (!a->RundownClosed) {
         ExWaitForRundownProtectionRelease(&a->Rundown); a->RundownClosed = TRUE;
     }
@@ -370,17 +409,7 @@ NTSTATUS NTAPI RpReleasePost(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targe
     RpLeave(a);
     return RpStop(a);
 }
-/* Microsoft KMDOD registers these callbacks even though the sample has no
-   hardware cursor and does not handle display interrupts. Keep the same safe
-   semantics so the display-only callback table is complete without claiming
-   unsupported hardware features. */
-BOOLEAN NTAPI RpInterrupt(PVOID context, ULONG messageNumber)
-{
-    UNREFERENCED_PARAMETER(context);
-    UNREFERENCED_PARAMETER(messageNumber);
-    return FALSE;
-}
-
+/* The hardware-backed ISR is implemented in vsync.c. */
 VOID NTAPI RpDpc(PVOID context)
 {
     RP_ADAPTER *a = context;
