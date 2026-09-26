@@ -40,7 +40,8 @@ $pin=Get-Content -LiteralPath (Join-Path $Root 'Package-Pin.json') -Raw | Conver
 $null=Test-LabManifest $Root $pin.Commit $pin.Thumbprint
 Write-Host 'CLASSIC_POWERSHELL_MANIFEST_VERIFIED'
 & (Join-Path $Root 'Run-Lab.ps1') -Action Preflight
-exit 99
+# A nested script's exit updates LASTEXITCODE; propagate it to this child process.
+exit $LASTEXITCODE
 '@ | Set-Content $classic -Encoding utf8
         $isolated=Join-Path $dir 'isolated-programdata'
         New-Item -ItemType Directory -Path $isolated | Out-Null
