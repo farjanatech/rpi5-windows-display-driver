@@ -34,8 +34,7 @@ try {
         $nupkg = "$dir.nupkg"
         $uri = "https://api.nuget.org/v3-flatcontainer/$id/$version/$id.$version.nupkg"
         if (!(Test-Path $nupkg)) { Invoke-WebRequest -Uri $uri -OutFile $nupkg }
-        # Verify NuGet author/repository signatures before extraction. The flat-container
-        # service does not provide a supported .nupkg.sha512 download endpoint.
+        # Verify author/repository signatures before extraction. Record immutable content hashes.
         Run 'nuget.exe' @('verify','-All',$nupkg,'-NonInteractive')
         if (!(Test-Path $dir)) {
             Copy-Item $nupkg "$dir.zip" -Force
@@ -60,8 +59,9 @@ try {
     $um = Split-Path (Find-One $sdk 'Windows.h')
     $ucrt = Split-Path (Find-One $sdk 'corecrt.h')
     $libs = Split-Path (Find-One $wdk 'ntoskrnl.lib' '[\\/]arm64[\\/]')
+    # /kernel defines _KERNEL_MODE itself; redefining the reserved macro emits C4117.
     $compile = @('/nologo','/c','/TC','/std:c11','/kernel','/W4','/WX','/Zl','/GS','/guard:cf','/Z7',
-        '/D_ARM64_','/D_KERNEL_MODE','/D_WIN32_WINNT=0x0A00','/DWINVER=0x0A00','/DNTDDI_VERSION=0x0A000008',
+        '/D_ARM64_','/D_WIN32_WINNT=0x0A00','/DWINVER=0x0A00','/DNTDDI_VERSION=0x0A000008',
         '/DDXGKDDI_INTERFACE_VERSION=0x300E',"/I$km","/I$km/crt","/I$shared","/I$um","/I$ucrt")
     if ($Configuration -eq 'Debug') { $compile += '/Od'; $compile += '/DDBG=1' } else { $compile += '/O2' }
     $objects = @()
@@ -113,7 +113,7 @@ try {
     $json = $manifest | ConvertTo-Json -Depth 8
     $json | Set-Content (Join-Path $Out 'manifest.json') -Encoding utf8
     if ($TestSign) {
-        # Authenticate the INF and all package hashes too; unsigned JSON alone is not a trust anchor.
+        # Authenticate the INF and all package hashes; never execute the resulting metadata file.
         $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
         $signedMetadata = Join-Path $Out 'package-manifest.ps1'
         "# RPI5DISPLAY-MANIFEST $encoded`nthrow 'Signed metadata only. Do not execute this file.'" |

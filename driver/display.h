@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #pragma once
+/* WDK 26100's ARM64 register macros use legacy token concatenation. Suppress
+ * C5103 only inside vendor headers; keep /W4 /WX on our implementation. */
+#pragma warning(push)
+#pragma warning(disable:5103)
 #include <ntddk.h>
 #include <dispmprt.h>
+#pragma warning(pop)
 #include "../core/framebuffer.h"
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
@@ -34,3 +39,7 @@ DXGKDDI_RECOMMENDMONITORMODES RpRecommendMonitor;
 DXGKDDI_RECOMMENDFUNCTIONALVIDPN RpRecommendFunctional;
 DXGKDDI_UPDATEACTIVEVIDPNPRESENTPATH RpUpdatePath;
 DXGKDDI_QUERYVIDPNHWCAPABILITY RpQueryVidPnCaps;
+DXGKDDI_PRESENTDISPLAYONLY RpPresent;
+DXGKDDI_SETVIDPNSOURCEVISIBILITY RpVisibility;
+DXGKDDI_SYSTEM_DISPLAY_ENABLE RpSystemEnable;
+DXGKDDI_SYSTEM_DISPLAY_WRITE RpSystemWrite;

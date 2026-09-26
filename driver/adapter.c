@@ -15,11 +15,7 @@ DXGKDDI_SET_POWER_STATE RpPower;
 DXGKDDI_RESET_DEVICE RpReset;
 DXGKDDI_UNLOAD RpUnload;
 DXGKDDI_QUERYADAPTERINFO RpCaps;
-DXGKDDI_PRESENTDISPLAYONLY RpPresent;
-DXGKDDI_SETVIDPNSOURCEVISIBILITY RpVisibility;
 DXGKDDI_STOP_DEVICE_AND_RELEASE_POST_DISPLAY_OWNERSHIP RpReleasePost;
-DXGKDDI_SYSTEM_DISPLAY_ENABLE RpSystemEnable;
-DXGKDDI_SYSTEM_DISPLAY_WRITE RpSystemWrite;
 
 BOOLEAN RpEnter(RP_ADAPTER *a)
 {
@@ -152,8 +148,8 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         RP_LOG("invalid POST framebuffer; no address fallback is permitted\n");
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    /* Only the OS-owned POST framebuffer is mapped, never guessed MMIO or user-supplied memory.
-       Firmware must keep this region reserved for the entire ownership interval. */
+    /* Map only the OS-owned POST framebuffer. The firmware must reserve this
+       region throughout ownership. No user-controlled address or MMIO IOCTL exists. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
     if (!a->Framebuffer) return STATUS_INSUFFICIENT_RESOURCES;
     a->FramebufferBytes = bytes;
@@ -236,85 +232,7 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
     caps->HighestAcceptableAddress.QuadPart = MAXLONGLONG;
     caps->MaxPointerWidth = caps->MaxPointerHeight = 0;
     caps->SupportNonVGA = TRUE;
-    /* Software cursor; no GPU acceleration, interrupts, rotation, gamma or power-management claims. */
     return STATUS_SUCCESS;
-}
-VOID RpFlush(RP_ADAPTER *a, RP_RECT rect)
-{
-    LONG y;
-    if (!a->Visible || a->AdapterPower != PowerDeviceD0 || a->MonitorPower != PowerDeviceD0 || a->CrashDisplay) return;
-    for (y = rect.top; y < rect.bottom; ++y) {
-        SIZE_T offset = (SIZE_T)y * a->Display.Pitch + (SIZE_T)rect.left * 4;
-        WRITE_REGISTER_BUFFER_ULONG((PULONG)((PUCHAR)a->Framebuffer + offset),
-            (PULONG)(a->Shadow.data + offset), (ULONG)(rect.right - rect.left));
-    }
-    KeMemoryBarrier();
-}
-VOID RpBlank(RP_ADAPTER *a)
-{
-    ULONG x, y;
-    if (!a->Framebuffer || a->CrashDisplay) return;
-    for (y = 0; y < a->Display.Height; ++y) {
-        volatile ULONG *row = (volatile ULONG *)((PUCHAR)a->Framebuffer + (SIZE_T)y * a->Display.Pitch);
-        for (x = 0; x < a->Display.Width; ++x) row[x] = 0;
-    }
-    KeMemoryBarrier();
-}
-static RP_RECT RpRect(RECT r)
-{
-    RP_RECT result = { r.left, r.top, r.right, r.bottom }; return result;
-}
-NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYONLY *p)
-{
-    RP_ADAPTER *a = (RP_ADAPTER *)context;
-    RP_SURFACE src;
-    RP_RECT full;
-    ULONG i;
-    NTSTATUS result = STATUS_SUCCESS;
-    if (!p || p->VidPnSourceId != 0 || p->BytesPerPixel != 4 || p->Pitch <= 0 ||
-        p->Flags.Rotate || p->NumMoves > RP_MAX_RECTS || p->NumDirtyRects > RP_MAX_RECTS ||
-        (p->NumMoves && !p->pMoves) || (p->NumDirtyRects && !p->pDirtyRect) || !p->pSource) return STATUS_INVALID_PARAMETER;
-    if (!RpEnter(a)) return STATUS_DEVICE_NOT_READY;
-    src.data = p->pSource; src.width = a->Display.Width; src.height = a->Display.Height; src.pitch = (ULONG)p->Pitch;
-    if (!rp_layout(src.width, src.height, src.pitch, &src.size)) { RpLeave(a); return STATUS_INVALID_PARAMETER; }
-    full.left = full.top = 0; full.right = (LONG)src.width; full.bottom = (LONG)src.height;
-    __try {
-        /* Validate the ENTIRE batch before mutating the shadow or framebuffer. */
-        for (i = 0; i < p->NumMoves; ++i) {
-            if (!rp_move_valid(&a->Shadow, RpRect(p->pMoves[i].DestRect), p->pMoves[i].SourcePoint.x, p->pMoves[i].SourcePoint.y)) {
-                result = STATUS_INVALID_PARAMETER; __leave;
-            }
-        }
-        for (i = 0; i < p->NumDirtyRects; ++i) {
-            if (!rp_rect_valid(src.width, src.height, RpRect(p->pDirtyRect[i]))) { result = STATUS_INVALID_PARAMETER; __leave; }
-        }
-        if (a->NeedFull) {
-            rp_copy(&a->Shadow, &src, full); a->NeedFull = FALSE; RpFlush(a, full);
-        } else {
-            for (i = 0; i < p->NumMoves; ++i)
-                rp_move(&a->Shadow, RpRect(p->pMoves[i].DestRect), p->pMoves[i].SourcePoint.x, p->pMoves[i].SourcePoint.y);
-            for (i = 0; i < p->NumDirtyRects; ++i) rp_copy(&a->Shadow, &src, RpRect(p->pDirtyRect[i]));
-            for (i = 0; i < p->NumMoves; ++i) RpFlush(a, RpRect(p->pMoves[i].DestRect));
-            for (i = 0; i < p->NumDirtyRects; ++i) RpFlush(a, RpRect(p->pDirtyRect[i]));
-        }
-        ++a->Presents;
-        if (a->Presents == 1 || (a->Presents & 1023) == 0) RP_LOG("present count=%llu\n", a->Presents);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        a->NeedFull = TRUE; result = GetExceptionCode();
-    }
-    RpLeave(a);
-    return result;
-}
-NTSTATUS APIENTRY RpVisibility(CONST HANDLE context, CONST DXGKARG_SETVIDPNSOURCEVISIBILITY *p)
-{
-    RP_ADAPTER *a = (RP_ADAPTER *)context;
-    RP_RECT full;
-    if (!p || (p->VidPnSourceId != 0 && p->VidPnSourceId != D3DDDI_ID_ALL)) return STATUS_INVALID_PARAMETER;
-    if (!RpEnter(a)) return STATUS_DEVICE_NOT_READY;
-    a->Visible = p->Visible;
-    full.left = full.top = 0; full.right = (LONG)a->Display.Width; full.bottom = (LONG)a->Display.Height;
-    if (a->Visible) RpFlush(a, full); else RpBlank(a);
-    RpLeave(a); return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
 {
@@ -322,7 +240,8 @@ NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER
     RP_RECT full;
     if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) return STATUS_INVALID_PARAMETER;
     if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) return STATUS_INVALID_PARAMETER;
-    /* Do not pretend to implement physical adapter suspend. Lab installation requires sleep/hibernation off. */
+    /* Physical adapter suspend is not implemented. Do not report it as working.
+       The lab runbook requires sleep/hibernation disabled before opting in. */
     if (uid == DISPLAY_ADAPTER_HW_ID && power != PowerDeviceD0 &&
         action != PowerActionShutdown && action != PowerActionShutdownReset && action != PowerActionShutdownOff)
         return STATUS_NOT_SUPPORTED;
@@ -334,32 +253,3 @@ NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER
 }
 VOID NTAPI RpReset(PVOID context) { UNREFERENCED_PARAMETER(context); }
 VOID NTAPI RpUnload(VOID) { }
-NTSTATUS NTAPI RpSystemEnable(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID target,
-    PDXGKARG_SYSTEM_DISPLAY_ENABLE_FLAGS flags, PULONG width, PULONG height, PD3DDDIFORMAT format)
-{
-    RP_ADAPTER *a = context;
-    UNREFERENCED_PARAMETER(flags);
-    if (!a || !a->Active || !a->Framebuffer || !width || !height || !format ||
-        (target != 0 && target != D3DDDI_ID_UNINITIALIZED)) return STATUS_DEVICE_NOT_READY;
-    InterlockedExchange(&a->CrashDisplay, 1);
-    *width = a->Display.Width; *height = a->Display.Height; *format = a->Display.ColorFormat;
-    return STATUS_SUCCESS;
-}
-VOID NTAPI RpSystemWrite(PVOID context, PVOID source, ULONG width, ULONG height, ULONG stride, ULONG x, ULONG y)
-{
-    RP_ADAPTER *a = context;
-    ULONG row, col;
-    if (!a || !source || !a->Framebuffer || !a->Active || !width || !height ||
-        width > a->Display.Width || height > a->Display.Height || x > a->Display.Width - width ||
-        y > a->Display.Height - height || stride < width * 4u) return;
-    /* Bugcheck path: nonpageable, no allocation, no mutex and no wait. */
-    for (row = 0; row < height; ++row) {
-        PUCHAR s = (PUCHAR)source + (SIZE_T)row * stride;
-        volatile ULONG *d = (volatile ULONG *)((PUCHAR)a->Framebuffer + (SIZE_T)(y + row) * a->Display.Pitch) + x;
-        for (col = 0; col < width; ++col) {
-            d[col] = (ULONG)s[col * 4] | ((ULONG)s[col * 4 + 1] << 8) |
-                ((ULONG)s[col * 4 + 2] << 16) | ((ULONG)s[col * 4 + 3] << 24);
-        }
-    }
-    KeMemoryBarrier();
-}
