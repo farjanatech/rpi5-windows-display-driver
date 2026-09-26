@@ -72,7 +72,7 @@ static inline int rp_edid_block_valid(const rp_h_u8 *block, int base)
 
 static inline int rp_display_timing_valid(const RP_DISPLAY_TIMING *t, rp_h_u32 width, rp_h_u32 height)
 {
-    if (!t || !t->clock_khz || !width || !height) return 0;
+    if (!t || !t->clock_khz || t->clock_khz > 4000000u || !width || !height) return 0;
     if (t->hdisplay != width || t->vdisplay != height) return 0;
     if (t->htotal < t->hdisplay || t->vtotal < t->vdisplay) return 0;
     if (t->htotal > 16384u || t->vtotal > 16384u) return 0;
