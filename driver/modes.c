@@ -30,10 +30,10 @@ static VOID RpSignal(RP_ADAPTER *a, D3DKMDT_VIDEO_SIGNAL_INFO *s)
         s->TotalSize.cx = a->FirmwareDisplay.timing.htotal;
         s->TotalSize.cy = a->FirmwareDisplay.timing.vtotal;
         s->PixelRate = pixelHz;
-        s->HSyncFreq.Numerator = pixelHz;
+        s->HSyncFreq.Numerator = (UINT)pixelHz;
         s->HSyncFreq.Denominator = a->FirmwareDisplay.timing.htotal;
-        s->VSyncFreq.Numerator = pixelHz;
-        s->VSyncFreq.Denominator = frameTotal;
+        s->VSyncFreq.Numerator = (UINT)pixelHz;
+        s->VSyncFreq.Denominator = (UINT)frameTotal;
         return;
     }
 
