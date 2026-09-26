@@ -15,7 +15,7 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.6"
+#define RP_DRIVER_VERSION "0.1.7"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
