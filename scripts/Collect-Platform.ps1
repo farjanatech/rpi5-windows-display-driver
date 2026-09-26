@@ -37,6 +37,40 @@ foreach ($device in $devices) {
         $text = & pnputil.exe /enum-devices /instanceid $device.InstanceId /resources /drivers 2>&1 | Out-String
         @{ExitCode=$LASTEXITCODE; Output=$text}
     }
+    $entry['DriverStartDiagnostics'] = Read-Optional {
+        Initialize-LabNative
+        $key=[Rpi5Lab.Native]::OpenParameters($device.InstanceId,$false)
+        try {
+            $stage=$key.GetValue('Rpi5DisplayStartStage',$null)
+            $status=$key.GetValue('Rpi5DisplayStartStatus',$null)
+            if ($null -eq $stage) { return [ordered]@{Recorded=$false} }
+            $stageNames=@('NotRecorded','Entered','InterfaceValidated','DeviceInformation',
+                'PostOwnership','PostValidated','FramebufferMapped','ShadowAllocated','Completed')
+            $stageNumber=[int]$stage
+            $stageName=if ($stageNumber -ge 0 -and $stageNumber -lt $stageNames.Count) {
+                $stageNames[$stageNumber]
+            } else { 'Unknown' }
+            $statusBits=$null
+            if ($null -ne $status) {
+                $statusBits=[BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$status),0)
+            }
+            $mapMode=[int]$key.GetValue('Rpi5DisplayFramebufferMapMode',0)
+            $mapName=switch ($mapMode) { 1 {'WriteCombined'} 2 {'NonCached'} default {'NotMapped'} }
+            [ordered]@{
+                Recorded=$true; Stage=$stageNumber; StageName=$stageName;
+                StatusHex=if ($null -ne $statusBits) { '0x{0:X8}' -f $statusBits } else { $null };
+                FramebufferMapMode=$mapName;
+                Width=$key.GetValue('Rpi5DisplayPostWidth',$null);
+                Height=$key.GetValue('Rpi5DisplayPostHeight',$null);
+                Pitch=$key.GetValue('Rpi5DisplayPostPitch',$null);
+                ColorFormat=$key.GetValue('Rpi5DisplayPostColorFormat',$null);
+                TargetId=$key.GetValue('Rpi5DisplayPostTargetId',$null);
+                AcpiId=$key.GetValue('Rpi5DisplayPostAcpiId',$null);
+                PhysicalAddressLow=$key.GetValue('Rpi5DisplayPostPhysLow',$null);
+                PhysicalAddressHigh=$key.GetValue('Rpi5DisplayPostPhysHigh',$null)
+            }
+        } finally { $key.Dispose() }
+    }
     $adapters += $entry
 }
 $ci = Read-Optional { Initialize-LabNative; [Rpi5Lab.Native]::CodeIntegrity() }
