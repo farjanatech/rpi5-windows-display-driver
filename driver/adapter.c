@@ -316,6 +316,7 @@ NTSTATUS NTAPI RpReleasePost(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targe
 NTSTATUS NTAPI RpChildren(PVOID context, PDXGK_CHILD_DESCRIPTOR desc, ULONG size)
 {
     RP_ADAPTER *a = context;
+    RP_LOG("QueryChildRelations bytes=%lu\n", size);
     if (!a) return STATUS_INVALID_PARAMETER;
     if (!desc || size < 2 * sizeof(*desc)) return STATUS_BUFFER_TOO_SMALL;
     RtlZeroMemory(desc, size);
@@ -325,11 +326,14 @@ NTSTATUS NTAPI RpChildren(PVOID context, PDXGK_CHILD_DESCRIPTOR desc, ULONG size
     desc[0].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
     desc[0].ChildUid = 0;
     desc[0].AcpiUid = a->Display.AcpiId;
+    RP_LOG("QueryChildRelations target=0 acpi=%lu alwaysConnected=1\n", desc[0].AcpiUid);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpChildStatus(PVOID context, PDXGK_CHILD_STATUS status, BOOLEAN nonDestructive)
 {
     UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(nonDestructive);
+    RP_LOG("QueryChildStatus uid=%lu type=%u\n", status ? status->ChildUid : MAXULONG,
+        status ? (UINT)status->Type : MAXUINT);
     if (!status || status->ChildUid != 0) return STATUS_INVALID_PARAMETER;
     if (status->Type != StatusConnection) return STATUS_NOT_SUPPORTED;
     status->HotPlug.Connected = TRUE;
@@ -338,7 +342,10 @@ NTSTATUS NTAPI RpChildStatus(PVOID context, PDXGK_CHILD_STATUS status, BOOLEAN n
 NTSTATUS NTAPI RpDescriptor(PVOID context, ULONG uid, PDXGK_DEVICE_DESCRIPTOR desc)
 {
     UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(desc);
-    return uid == 0 ? STATUS_MONITOR_NO_DESCRIPTOR : STATUS_INVALID_PARAMETER;
+    RP_LOG("QueryDeviceDescriptor uid=%lu; EDID is not supplied by this prototype\n", uid);
+    /* Match Microsoft's KMDOD no-EDID contract. MONITOR_NO_DESCRIPTOR is used
+       only after a descriptor source exists but has no more blocks. */
+    return uid == 0 ? STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED : STATUS_INVALID_PARAMETER;
 }
 NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *info)
 {
@@ -350,11 +357,18 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
     if (!info->pOutputData || info->OutputDataSize < sizeof(*caps)) return STATUS_BUFFER_TOO_SMALL;
     caps = info->pOutputData;
     RtlZeroMemory(caps, sizeof(*caps));
-    caps->HighestAcceptableAddress.QuadPart = MAXLONGLONG;
+    caps->HighestAcceptableAddress.QuadPart = -1;
     caps->MaxPointerWidth = caps->MaxPointerHeight = 0;
+    /* KMDOD is a WDDM 1.2 display-only model. Microsoft's reference KMDOD
+       explicitly reports v1.2 here; leaving this zero caused dxgkrnl to stop
+       the adapter immediately after QueryAdapterInfo on Windows 11 ARM64. */
+    caps->WDDMVersion = DXGKDDI_WDDMv1_2;
     caps->SupportNonVGA = TRUE;
-    /* WDDMVersion is reserved for interfaces >= WIN7 per the detailed WDK API
-       page. Keep it zero, rather than guessing from the conflicting feature table. */
+    /* Rotation remains unadvertised until the software rotation path exists. */
+    caps->SupportSmoothRotation = FALSE;
+    RP_LOG("DriverCaps WDDM=%u NonVGA=%u SmoothRotation=%u HighestAddress=0x%llx\n",
+        (UINT)caps->WDDMVersion, caps->SupportNonVGA, caps->SupportSmoothRotation,
+        (ULONGLONG)caps->HighestAcceptableAddress.QuadPart);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
