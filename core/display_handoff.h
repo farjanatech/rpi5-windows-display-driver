@@ -24,6 +24,11 @@ typedef uint64_t rp_h_u64;
 #define RP_DISPLAY_EDID_BLOCK_SIZE 128u
 #define RP_DISPLAY_TIMING_FLAG_INTERLACE 0x4u
 
+/* UEFI variable attributes used by the volatile firmware-to-Windows contract. */
+#define RP_UEFI_VARIABLE_NON_VOLATILE 0x00000001u
+#define RP_UEFI_VARIABLE_BOOTSERVICE_ACCESS 0x00000002u
+#define RP_UEFI_VARIABLE_RUNTIME_ACCESS 0x00000004u
+
 #pragma pack(push, 1)
 typedef struct RP_DISPLAY_TIMING {
     rp_h_u8 display;
@@ -56,6 +61,14 @@ typedef struct RP_DISPLAY_HANDOFF {
     rp_h_u8 edid[RP_DISPLAY_HANDOFF_MAX_EDID_BLOCKS * RP_DISPLAY_EDID_BLOCK_SIZE];
 } RP_DISPLAY_HANDOFF;
 #pragma pack(pop)
+
+static inline int rp_display_handoff_attributes_valid(rp_h_u32 attributes)
+{
+    const rp_h_u32 required = RP_UEFI_VARIABLE_BOOTSERVICE_ACCESS |
+        RP_UEFI_VARIABLE_RUNTIME_ACCESS;
+    return (attributes & RP_UEFI_VARIABLE_NON_VOLATILE) == 0 &&
+        (attributes & required) == required;
+}
 
 static inline int rp_edid_block_valid(const rp_h_u8 *block, int base)
 {
@@ -92,6 +105,8 @@ static inline int rp_display_handoff_valid(const RP_DISPLAY_HANDOFF *h, rp_h_u32
         !rp_display_timing_valid(&h->timing, width, height)) return 0;
     if (h->flags & RP_DISPLAY_HANDOFF_EDID_VALID) {
         if (!h->edid_block_count || h->edid_block_count > RP_DISPLAY_HANDOFF_MAX_EDID_BLOCKS) return 0;
+        /* Never expose a truncated EDID chain: byte 126 declares extensions. */
+        if ((rp_h_u32)h->edid[126] + 1u != h->edid_block_count) return 0;
         for (i = 0; i < h->edid_block_count; ++i)
             if (!rp_edid_block_valid(h->edid + i * RP_DISPLAY_EDID_BLOCK_SIZE, i == 0)) return 0;
     } else if (h->edid_block_count != 0) {
