@@ -124,6 +124,54 @@ static BOOLEAN RpHardwareMatch(PDEVICE_OBJECT pdo)
     }
     return FALSE;
 }
+static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
+{
+    static GUID handoffGuid = { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
+    UNICODE_STRING name = RTL_CONSTANT_STRING(L"Rpi5DisplayHandoff");
+    ULONG bytes = sizeof(a->FirmwareDisplay);
+    ULONG attributes = 0;
+    NTSTATUS st;
+    HANDLE key;
+
+    RtlZeroMemory(&a->FirmwareDisplay, sizeof(a->FirmwareDisplay));
+    a->FirmwareTimingValid = FALSE;
+    a->FirmwareEdidValid = FALSE;
+    a->FirmwareVariableAttributes = 0;
+
+    st = ExGetFirmwareEnvironmentVariable(&name, &handoffGuid, &a->FirmwareDisplay, &bytes, &attributes);
+    if (!NT_SUCCESS(st)) {
+        RP_LOG("firmware display handoff unavailable status=0x%08lx; using unspecified timing fallback\n", st);
+    } else if (bytes != sizeof(a->FirmwareDisplay) ||
+               !rp_display_handoff_valid(&a->FirmwareDisplay, a->Display.Width, a->Display.Height)) {
+        RP_LOG("firmware display handoff rejected bytes=%lu signature=0x%08lx version=%u flags=0x%08lx\n",
+            bytes, a->FirmwareDisplay.signature, a->FirmwareDisplay.version, a->FirmwareDisplay.flags);
+        RtlZeroMemory(&a->FirmwareDisplay, sizeof(a->FirmwareDisplay));
+    } else {
+        a->FirmwareTimingValid = TRUE;
+        a->FirmwareEdidValid = (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
+        a->FirmwareVariableAttributes = attributes;
+        RP_LOG("firmware display handoff accepted display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
+            a->FirmwareDisplay.display_number, a->FirmwareDisplay.timing.clock_khz,
+            a->FirmwareDisplay.timing.htotal, a->FirmwareDisplay.timing.vtotal,
+            a->FirmwareDisplay.timing.vrefresh, a->FirmwareDisplay.edid_block_count, attributes);
+    }
+
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareTimingValid", a->FirmwareTimingValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidValid", a->FirmwareEdidValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVariableAttributes", a->FirmwareVariableAttributes);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareClockKHz",
+            a->FirmwareTimingValid ? a->FirmwareDisplay.timing.clock_khz : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareHTotal",
+            a->FirmwareTimingValid ? a->FirmwareDisplay.timing.htotal : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVTotal",
+            a->FirmwareTimingValid ? a->FirmwareDisplay.timing.vtotal : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidBlocks",
+            a->FirmwareEdidValid ? a->FirmwareDisplay.edid_block_count : 0);
+        ZwClose(key);
+    }
+}
+
 NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
 {
     KMDDOD_INITIALIZATION_DATA init;
@@ -241,6 +289,9 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
     RpRecordStartState(a, RpStartPostValidated, STATUS_SUCCESS, &a->Display, 0);
+    /* Timing/EDID is optional. A missing or invalid firmware handoff must not
+       regress the already hardware-validated 0.1.7 framebuffer path. */
+    RpLoadFirmwareDisplay(a);
     /* Map only the OS-owned POST framebuffer. Match Microsoft's KMDOD sample:
        prefer write-combining, then retry non-cached if the platform rejects WC. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
@@ -382,11 +433,23 @@ NTSTATUS NTAPI RpChildStatus(PVOID context, PDXGK_CHILD_STATUS status, BOOLEAN n
 }
 NTSTATUS NTAPI RpDescriptor(PVOID context, ULONG uid, PDXGK_DEVICE_DESCRIPTOR desc)
 {
-    UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(desc);
-    RP_LOG("QueryDeviceDescriptor uid=%lu; EDID is not supplied by this prototype\n", uid);
-    /* Match Microsoft's KMDOD no-EDID contract. MONITOR_NO_DESCRIPTOR is used
-       only after a descriptor source exists but has no more blocks. */
-    return uid == 0 ? STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED : STATUS_INVALID_PARAMETER;
+    RP_ADAPTER *a = context;
+    ULONG total, remaining, count;
+    if (!a || !desc || uid != 0) return STATUS_INVALID_PARAMETER;
+    if (!a->FirmwareEdidValid) {
+        RP_LOG("QueryDeviceDescriptor uid=0; no validated firmware EDID\n");
+        return STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
+    }
+    total = a->FirmwareDisplay.edid_block_count * RP_DISPLAY_EDID_BLOCK_SIZE;
+    if (desc->DescriptorOffset >= total) return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+    remaining = total - desc->DescriptorOffset;
+    count = min(desc->DescriptorLength, remaining);
+    if (!count) return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+    RtlCopyMemory(desc->DescriptorBuffer,
+        a->FirmwareDisplay.edid + desc->DescriptorOffset, count);
+    RP_LOG("QueryDeviceDescriptor offset=%lu requested=%lu returned=%lu total=%lu\n",
+        desc->DescriptorOffset, desc->DescriptorLength, count, total);
+    return STATUS_SUCCESS;
 }
 NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *info)
 {
