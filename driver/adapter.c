@@ -18,6 +18,50 @@ DXGKDDI_UNLOAD RpUnload;
 DXGKDDI_QUERYADAPTERINFO RpCaps;
 DXGKDDI_STOP_DEVICE_AND_RELEASE_POST_DISPLAY_OWNERSHIP RpReleasePost;
 
+typedef enum RP_START_STAGE {
+    RpStartNone = 0,
+    RpStartEntered = 1,
+    RpStartInterfaceValidated = 2,
+    RpStartDeviceInfo = 3,
+    RpStartPostOwnership = 4,
+    RpStartPostValidated = 5,
+    RpStartFramebufferMapped = 6,
+    RpStartShadowAllocated = 7,
+    RpStartCompleted = 8
+} RP_START_STAGE;
+
+static VOID RpWriteStartDword(HANDLE key, PCWSTR valueName, ULONG value)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, valueName);
+    (VOID)ZwSetValueKey(key, &name, 0, REG_DWORD, &value, sizeof(value));
+}
+
+/* Persist tiny, non-sensitive startup breadcrumbs in the selected device key.
+   ETW normally starts after boot, so these values let a later support bundle
+   identify the exact StartDevice stage that failed. */
+static VOID RpRecordStartState(RP_ADAPTER *a, RP_START_STAGE stage, NTSTATUS status,
+                               const DXGK_DISPLAY_INFORMATION *display, ULONG mapMode)
+{
+    HANDLE key;
+    if (!a || !a->Pdo ||
+        !NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) return;
+    RpWriteStartDword(key, L"Rpi5DisplayStartStage", (ULONG)stage);
+    RpWriteStartDword(key, L"Rpi5DisplayStartStatus", (ULONG)status);
+    RpWriteStartDword(key, L"Rpi5DisplayFramebufferMapMode", mapMode);
+    if (display) {
+        RpWriteStartDword(key, L"Rpi5DisplayPostWidth", display->Width);
+        RpWriteStartDword(key, L"Rpi5DisplayPostHeight", display->Height);
+        RpWriteStartDword(key, L"Rpi5DisplayPostPitch", display->Pitch);
+        RpWriteStartDword(key, L"Rpi5DisplayPostColorFormat", (ULONG)display->ColorFormat);
+        RpWriteStartDword(key, L"Rpi5DisplayPostTargetId", display->TargetId);
+        RpWriteStartDword(key, L"Rpi5DisplayPostAcpiId", display->AcpiId);
+        RpWriteStartDword(key, L"Rpi5DisplayPostPhysLow", display->PhysicAddress.LowPart);
+        RpWriteStartDword(key, L"Rpi5DisplayPostPhysHigh", (ULONG)display->PhysicAddress.HighPart);
+    }
+    ZwClose(key);
+}
+
 BOOLEAN RpEnter(RP_ADAPTER *a)
 {
     if (!a || !ExAcquireRundownProtection(&a->Rundown)) return FALSE;
@@ -137,26 +181,50 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     DXGK_DEVICE_INFO device;
     NTSTATUS st;
     size_t bytes;
+    ULONG mapMode = 0;
     if (!a || !start || !iface || !sources || !children) return STATUS_INVALID_PARAMETER;
     *sources = *children = 0;
+    RpRecordStartState(a, RpStartEntered, STATUS_PENDING, NULL, 0);
     RP_LOG("StartDevice begin; interface version=0x%08lx size=%lu\n", iface->Version, iface->Size);
     if (!RpLabEnabled(a->Pdo)) {
         RP_LOG("start blocked: per-device LabEnable opt-in is absent\n");
+        RpRecordStartState(a, RpStartEntered, STATUS_DEVICE_CONFIGURATION_ERROR, NULL, 0);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    if (a->Active || a->Framebuffer) return STATUS_INVALID_DEVICE_STATE;
+    if (a->Active || a->Framebuffer) {
+        RpRecordStartState(a, RpStartEntered, STATUS_INVALID_DEVICE_STATE, NULL, 0);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     if (iface->Size < FIELD_OFFSET(DXGKRNL_INTERFACE, DxgkCbAcquirePostDisplayOwnership) +
         sizeof(iface->DxgkCbAcquirePostDisplayOwnership) || !iface->DxgkCbAcquirePostDisplayOwnership ||
-        !iface->DxgkCbGetDeviceInformation || !iface->DxgkCbQueryVidPnInterface) return STATUS_NOT_SUPPORTED;
+        !iface->DxgkCbGetDeviceInformation || !iface->DxgkCbQueryVidPnInterface) {
+        RpRecordStartState(a, RpStartEntered, STATUS_NOT_SUPPORTED, NULL, 0);
+        return STATUS_NOT_SUPPORTED;
+    }
+    RpRecordStartState(a, RpStartInterfaceValidated, STATUS_SUCCESS, NULL, 0);
     RtlZeroMemory(&a->Dxgk, sizeof(a->Dxgk));
     RtlCopyMemory(&a->Dxgk, iface, min(iface->Size, sizeof(a->Dxgk)));
     RtlZeroMemory(&device, sizeof(device));
     st = iface->DxgkCbGetDeviceInformation(iface->DeviceHandle, &device);
-    if (!NT_SUCCESS(st)) { RP_LOG("GetDeviceInformation failed 0x%08lx\n", st); return st; }
+    if (!NT_SUCCESS(st)) {
+        RP_LOG("GetDeviceInformation failed 0x%08lx\n", st);
+        RpRecordStartState(a, RpStartInterfaceValidated, st, NULL, 0);
+        return st;
+    }
+    RpRecordStartState(a, RpStartDeviceInfo, STATUS_SUCCESS, NULL, 0);
     RP_LOG("Windows resources received; translated list present=%u\n", device.TranslatedResourceList != NULL);
     RtlZeroMemory(&a->Display, sizeof(a->Display));
+    /* Match Microsoft's KMDOD handoff contract exactly: boot-time TargetId may
+       legitimately remain D3DDDI_ID_UNINITIALIZED. */
+    a->Display.TargetId = D3DDDI_ID_UNINITIALIZED;
     st = iface->DxgkCbAcquirePostDisplayOwnership(iface->DeviceHandle, &a->Display);
+    RpRecordStartState(a, RpStartPostOwnership, st, &a->Display, 0);
     if (!NT_SUCCESS(st)) { RP_LOG("POST handoff failed: 0x%08lx\n", st); return st; }
+    if (a->Display.Width == 0) {
+        RP_LOG("POST handoff returned no active POST display\n");
+        RpRecordStartState(a, RpStartPostOwnership, STATUS_UNSUCCESSFUL, &a->Display, 0);
+        return STATUS_UNSUCCESSFUL;
+    }
     RP_LOG("POST handoff width=%lu height=%lu pitch=%lu format=%u target=%lu acpi=%lu\n",
         a->Display.Width, a->Display.Height, a->Display.Pitch, (UINT)a->Display.ColorFormat,
         a->Display.TargetId, a->Display.AcpiId);
@@ -165,19 +233,35 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         (ULONGLONG)a->Display.PhysicAddress.QuadPart > MAXULONGLONG - bytes ||
         (a->Display.ColorFormat != D3DDDIFMT_X8R8G8B8 && a->Display.ColorFormat != D3DDDIFMT_A8R8G8B8)) {
         RP_LOG("invalid POST framebuffer; no address fallback is permitted\n");
+        RpRecordStartState(a, RpStartPostOwnership, STATUS_DEVICE_CONFIGURATION_ERROR, &a->Display, 0);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    /* Map only the OS-owned POST framebuffer. The firmware must reserve this
-       region throughout ownership. No user-controlled address or MMIO IOCTL exists. */
+    RpRecordStartState(a, RpStartPostValidated, STATUS_SUCCESS, &a->Display, 0);
+    /* Map only the OS-owned POST framebuffer. Match Microsoft's KMDOD sample:
+       prefer write-combining, then retry non-cached if the platform rejects WC. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
-    if (!a->Framebuffer) { RP_LOG("Framebuffer mapping failed bytes=%llu\n", (ULONGLONG)bytes); return STATUS_INSUFFICIENT_RESOURCES; }
+    if (a->Framebuffer) {
+        mapMode = 1;
+    } else {
+        RP_LOG("Framebuffer WC mapping failed; retrying non-cached bytes=%llu\n", (ULONGLONG)bytes);
+        a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_NOCACHE);
+        if (a->Framebuffer) mapMode = 2;
+    }
+    if (!a->Framebuffer) {
+        RP_LOG("Framebuffer mapping failed in both cache modes bytes=%llu\n", (ULONGLONG)bytes);
+        RpRecordStartState(a, RpStartPostValidated, STATUS_NO_MEMORY, &a->Display, 0);
+        return STATUS_NO_MEMORY;
+    }
     a->FramebufferBytes = bytes;
+    RpRecordStartState(a, RpStartFramebufferMapped, STATUS_SUCCESS, &a->Display, mapMode);
     a->Shadow.data = ExAllocatePool2(POOL_FLAG_NON_PAGED, bytes, RP_POOL_TAG);
     if (!a->Shadow.data) {
         RP_LOG("Shadow allocation failed bytes=%llu\n", (ULONGLONG)bytes);
         MmUnmapIoSpace(a->Framebuffer, bytes); a->Framebuffer = NULL; a->FramebufferBytes = 0;
+        RpRecordStartState(a, RpStartFramebufferMapped, STATUS_INSUFFICIENT_RESOURCES, &a->Display, mapMode);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+    RpRecordStartState(a, RpStartShadowAllocated, STATUS_SUCCESS, &a->Display, mapMode);
     a->Shadow.width = a->Display.Width; a->Shadow.height = a->Display.Height;
     a->Shadow.pitch = a->Display.Pitch; a->Shadow.size = bytes;
     a->Visible = TRUE; a->NeedFull = TRUE;
@@ -186,7 +270,9 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     if (a->RundownClosed) { ExReInitializeRundownProtection(&a->Rundown); a->RundownClosed = FALSE; }
     InterlockedExchange(&a->Active, 1);
     *sources = *children = 1;
-    RP_LOG("started %lux%lu pitch=%lu; no native hardware programming\n", a->Display.Width, a->Display.Height, a->Display.Pitch);
+    RpRecordStartState(a, RpStartCompleted, STATUS_SUCCESS, &a->Display, mapMode);
+    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu; no native hardware programming\n",
+        a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpStop(PVOID context)
