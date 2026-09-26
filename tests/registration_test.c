@@ -32,6 +32,10 @@ int main(void)
     RP_DOD_CALLBACK_BINDINGS(BIND_FIELD)
 #undef BIND_FIELD
     assert(table.DxgkDdiDispatchIoRequest == RpDispatchIoRequest);
+    assert(table.DxgkDdiInterruptRoutine == RpInterrupt);
+    assert(table.DxgkDdiDpcRoutine == RpDpc);
+    assert(table.DxgkDdiSetPointerPosition == RpPointerPosition);
+    assert(table.DxgkDdiSetPointerShape == RpPointerShape);
     assert(missing(&table) == 0);
     /* Reproduce the actual 0.1.1 omission: only the dispatch pointer is NULL. */
     table.DxgkDdiDispatchIoRequest = NULL;
@@ -41,6 +45,6 @@ int main(void)
     RP_DOD_REQUIRED_ENTRY_CALLBACKS(MUTATE_FIELD)
 #undef MUTATE_FIELD
     assert(missing(&table) == 0 && tested == 11);
-    printf("PASS: old missing-dispatch regression and %u required-entry callback omissions detected; logical test only\n", tested);
+    printf("PASS: old missing-dispatch regression, %u required-entry omissions, and KMDOD compatibility callbacks bound; logical test only\n", tested);
     return 0;
 }
