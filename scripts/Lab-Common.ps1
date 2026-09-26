@@ -1,6 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Functions only. Dot-sourcing does not change device, trust, boot or power settings.
+# Shared helpers. Module-path initialization is process-local; no device or policy changes.
 Set-StrictMode -Version Latest
+# Windows PowerShell launched by a PowerShell 7 process can inherit Core-only
+# module paths. Use Windows' built-in/shared module roots and explicitly load
+# Utility so script functions such as Get-FileHash are available.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $nativeModules=Join-Path $PSHOME 'Modules'
+    $sharedModules=Join-Path $env:ProgramFiles 'WindowsPowerShell/Modules'
+    $env:PSModulePath=$nativeModules+[IO.Path]::PathSeparator+$sharedModules
+    Import-Module (Join-Path $nativeModules 'Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1') -Force -ErrorAction Stop
+}
 function Initialize-LabCrypto {
     if ($PSVersionTable.PSEdition -eq 'Core') { Add-Type -AssemblyName System.Security.Cryptography.Pkcs }
     else { Add-Type -AssemblyName System.Security }
@@ -24,7 +33,6 @@ function Test-LabManifest {
     $content = [Security.Cryptography.Pkcs.ContentInfo]::new($bytes)
     $cms = [Security.Cryptography.Pkcs.SignedCms]::new($content, $true)
     $cms.Decode([IO.File]::ReadAllBytes($sp))
-    # Cryptographic verification with an independently pinned signer, without installing a root certificate.
     $cms.CheckSignature($true)
     if ($cms.SignerInfos.Count -ne 1) { throw 'Expected exactly one manifest signer.' }
     $signer = $cms.SignerInfos[0]
@@ -86,7 +94,6 @@ namespace Rpi5Lab {
             uint dev; IntPtr key;
             uint status = CM_Locate_DevNodeW(out dev, id, 0);
             if (status != 0) throw new InvalidOperationException("Cannot locate exact devnode: " + status);
-            // Minimal query/set rights; create the device key only for an explicit write.
             status = CM_Open_DevNode_Key(dev, write ? 3u : 1u, 0, write ? 0u : 1u, out key, 0);
             if (status != 0) throw new InvalidOperationException("Cannot open device configuration key: " + status);
             return RegistryKey.FromHandle(new SafeRegistryHandle(key, true));
@@ -116,7 +123,6 @@ function Assert-LabAdministrator {
         throw 'An elevated native ARM64 PowerShell session is required for installation/removal.'
     }
 }
-
 function Assert-LabNoReparseAncestors([string]$Path) {
     $current=[IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -150,13 +156,11 @@ function New-LabProtectedDirectory {
     $parent=Join-Path $root $Category
     Assert-LabNoReparseAncestors $parent
     if (!(Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
-    # Ensure old category directories also do not grant inherited access to other users.
     Set-Acl -LiteralPath $parent -AclObject $acl
     $path=Join-Path $parent ((Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
     return $path
 }
-
 function Get-LabInstallDisposition {
     param([int]$PnpExitCode,[bool]$Selected)
     if ($PnpExitCode -eq 3010) { return 'RebootRequired' }
