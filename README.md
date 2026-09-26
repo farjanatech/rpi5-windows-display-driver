@@ -4,6 +4,12 @@ An experimental, Windows-native **ARM64 display-only miniport** for Raspberry Pi
 
 > **Not hardware validated. Not a production driver.** Building or signing this package does not prove that it starts on a Pi, displays a desktop, survives power transitions, or is safe for daily use. No physical Pi is attached to the hosted CI workflow. Do not install it on your only recoverable Windows system.
 
+## 0.1.1 review and CMD installer
+
+The new [CMD installer guide](docs/CMD_INSTALLER.md) explains `Install.cmd`, `Preflight.cmd`, `Collect-Logs.cmd` and `Uninstall.cmd`, package verification and timestamped local support ZIPs. Use the **Rpi5Display-CMD-Installer-<commit>** artifact from a successful run; extract it fully. Runtime ETW tracing is new in this binary. No driver is installed by CI, and the launchers never silently weaken boot security or reboot the Pi.
+
+Read the [source review and remaining uncertainties](docs/REVIEW_0.1.1.md). A passed software test is not a passed hardware milestone. Existing [issue #2](https://github.com/farjanatech/rpi5-windows-display-driver/issues/2) remains the physical validation gate.
+
 ## Current implementation
 
 The first implementation preserves the firmware-selected boot mode and uses documented Windows callbacks to acquire the boot framebuffer. It does not program HDMI, HVS, clocks, mailbox registers, or V3D.
@@ -27,9 +33,9 @@ Windows display stack
 | Safety controls | Per-device `LabEnable` opt-in, no arbitrary-memory IOCTL, no guessed framebuffer address, bounded allocations, drain-before-stop cleanup |
 | Power | Visibility and software blanking only; physical suspend/resume and native display power-down are not implemented |
 | Acceleration | No V3D jobs, Direct3D hardware acceleration, video decode, render UMD, native mode changes, VSync or multiple outputs |
-| Deployment | Lab-only scripts; read-only preflight by default; no automatic installation, reboot, security-policy change, or firmware flashing |
+| Deployment | Lab-only scripts; preflight, explicit confirmed installation, and local log collection; no automatic reboot, boot-security-policy change or firmware flashing |
 
-**Never replace Windows' inbox `BasicDisplay.sys`.** This project builds the separately named `Rpi5Display.sys` and keeps the existing display-driver recovery route intact.
+**Never replace Windows' inbox `BasicDisplay.sys`.** This project builds the separately named `Rpi5Display.sys` and preserves the inbox package for recovery.
 
 ## Start here
 
@@ -41,9 +47,9 @@ Windows display stack
 
 ### Build in GitHub
 
-Push a branch or open a pull request to run **ARM64 driver validation** under [Actions](https://github.com/farjanatech/rpi5-windows-display-driver/actions/workflows/ci.yml). A run validates portable code with AddressSanitizer/UndefinedBehaviorSanitizer and attempts Debug/Release ARM64 builds, PE/INF checks, disposable test signatures, and package-integrity tests.
+Push to `main`, open/update a pull request, or manually dispatch **ARM64 driver validation** under [Actions](https://github.com/farjanatech/rpi5-windows-display-driver/actions/workflows/ci.yml). A run validates portable code with AddressSanitizer/UndefinedBehaviorSanitizer and attempts Debug/Release ARM64 builds, PE/INF checks, disposable test signatures, package-integrity tests and installer/diagnostic smoke tests.
 
-Only a run whose required jobs all succeed is a usable *build-validation result*. Download its `Rpi5Display-ARM64-LAB-<commit>` artifact, not a diagnostic artifact from a failed run. Inspect that exact run's source commit and signer thumbprint before using a package. CI success is **not** a Raspberry Pi test result or Microsoft certification.
+Only a run whose required jobs all succeed is a usable *build-validation result*. Download its `Rpi5Display-CMD-Installer-<commit>` artifact for the ready-to-extract Debug installer, or `Rpi5Display-ARM64-LAB-<commit>` for both configurations. Do not install diagnostic artifacts from failed runs. Inspect that exact run's source commit, artifact checksum and signer before using a package. CI success is **not** a Raspberry Pi test result or Microsoft certification.
 
 ### First action on the Pi: collect the baseline, not install
 
@@ -53,9 +59,9 @@ Run the reviewed collector from a checked-out source revision, using native ARM6
 .\scripts\Collect-Platform.ps1 -OutputPath "$env:TEMP\Rpi5Display-platform.json"
 ```
 
-Record the firmware commit, board revision, HDMI port and recovery procedure alongside the report. The collector does not install drivers, modify boot/security settings, or upload anything. Review and redact local identifiers before sharing it.
+Alternatively, the extracted CMD artifact includes `Preflight.cmd` and `Collect-Logs.cmd`. Record the firmware commit, board revision, HDMI port and recovery procedure alongside the report. Collection does not install drivers, modify boot/security settings, or upload anything. Review and redact local identifiers before sharing it.
 
-Do not advance to installation until the report, actual device identity, tested recovery route and independent diagnostics have been reviewed. Follow the complete [lab runbook](docs/LAB_INSTALL.md), not an isolated install command.
+Do not advance to installation until the report, actual device identity, tested recovery route and independent diagnostics have been reviewed. Follow the complete [CMD guide](docs/CMD_INSTALLER.md) and [lab runbook](docs/LAB_INSTALL.md), not an isolated install command.
 
 ## Roadmap: implemented code is not a passed milestone
 
@@ -85,12 +91,12 @@ New original project source is marked `GPL-3.0-only`; the existing [LICENSE](LIC
 
 ```text
 core/                   Checked platform-independent framebuffer operations
- driver/                Windows adapter, mode, presentation and crash-display callbacks
- package/               ARM64 INF input
- scripts/               Build, binary/package checks, platform collection and lab deployment
- tests/                 Exhaustive portable tests and package-tampering rejection tests
- docs/                  Audit, build, hardware gates and recovery procedures
- .github/workflows/     Hosted build validation, not remote Pi installation
+driver/                 Windows adapter, mode, presentation, ETW and crash-display callbacks
+package/                ARM64 INF input
+scripts/                Build, binary/package checks, CMD deployment and diagnostics
+tests/                  Portable, package, installer and synthetic trace tests
+docs/                   Audit, build, hardware gates and recovery procedures
+.github/workflows/      Hosted build validation, not remote Pi installation
 ```
 
 No signing private keys, credentials, raw memory dumps or device reports belong in this public repository.

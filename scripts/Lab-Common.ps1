@@ -86,8 +86,8 @@ namespace Rpi5Lab {
             uint dev; IntPtr key;
             uint status = CM_Locate_DevNodeW(out dev, id, 0);
             if (status != 0) throw new InvalidOperationException("Cannot locate exact devnode: " + status);
-            // CM_REGISTRY_HARDWARE, global profile, RegDisposition_OpenExisting.
-            status = CM_Open_DevNode_Key(dev, write ? 0x2001fu : 0x20019u, 0, 1, out key, 0);
+            // Minimal query/set rights; create the device key only for an explicit write.
+            status = CM_Open_DevNode_Key(dev, write ? 3u : 1u, 0, write ? 0u : 1u, out key, 0);
             if (status != 0) throw new InvalidOperationException("Cannot open device configuration key: " + status);
             return RegistryKey.FromHandle(new SafeRegistryHandle(key, true));
         }
@@ -115,4 +115,52 @@ function Assert-LabAdministrator {
     if (!([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'An elevated native ARM64 PowerShell session is required for installation/removal.'
     }
+}
+
+function Assert-LabNoReparseAncestors([string]$Path) {
+    $current=[IO.Path]::GetFullPath($Path)
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item=Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse/junction path rejected: $current" }
+        }
+        $next=Split-Path $current -Parent
+        if ($next -eq $current) { break }; $current=$next
+    }
+}
+function New-LabProtectedDirectory {
+    param([string]$Category)
+    if ($Category -notin @('Logs','Lab')) { throw 'Invalid lab directory category.' }
+    Assert-LabAdministrator
+    $root=Join-Path $env:ProgramData 'Rpi5Display'
+    Assert-LabNoReparseAncestors $root
+    if (Test-Path -LiteralPath $root) {
+        $owner=(Get-Acl -LiteralPath $root).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        $self=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($owner -notin @('S-1-5-18','S-1-5-32-544',$self)) { throw 'Existing lab root has an unexpected owner.' }
+    } else { New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null }
+    $acl=Get-Acl -LiteralPath $root
+    $acl.SetAccessRuleProtection($true,$false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+    foreach ($sid in @('S-1-5-18','S-1-5-32-544')) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    Set-Acl -LiteralPath $root -AclObject $acl
+    $parent=Join-Path $root $Category
+    Assert-LabNoReparseAncestors $parent
+    if (!(Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
+    # Ensure old category directories also do not grant inherited access to other users.
+    Set-Acl -LiteralPath $parent -AclObject $acl
+    $path=Join-Path $parent ((Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+    return $path
+}
+
+function Get-LabInstallDisposition {
+    param([int]$PnpExitCode,[bool]$Selected)
+    if ($PnpExitCode -eq 3010) { return 'RebootRequired' }
+    if ($PnpExitCode -ne 0) { return 'Failed' }
+    if (!$Selected) { return 'StagedOnly' }
+    return 'CheckSelectedBinary'
 }

@@ -1,6 +1,7 @@
 name: ARM64 driver validation
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -30,6 +31,7 @@ jobs:
           path: out/source.zip
           retention-days: 14
   arm64-build:
+    needs: portable-tests
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -61,6 +63,14 @@ jobs:
           path: out/ARM64/
           if-no-files-found: error
           retention-days: 14
+      - name: Upload ready-to-extract CMD installer (Debug)
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Rpi5Display-CMD-Installer-${{ github.event.pull_request.head.sha || github.sha }}
+          path: out/ARM64/Debug/
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain diagnostic logs on failure
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -69,4 +79,5 @@ jobs:
           path: |
             out/**/*.log
             out/**/*.json
+            out/**/installer-test-diagnostics/**
           if-no-files-found: ignore
