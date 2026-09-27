@@ -27,6 +27,8 @@ jobs:
           ./out/registration_test
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/display_handoff_test.c -o out/display_handoff_test
           ./out/display_handoff_test
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/acpi_handoff_test.c -o out/acpi_handoff_test
+          ./out/acpi_handoff_test
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/vsync_timing_test.c -o out/vsync_timing_test
           ./out/vsync_timing_test
       - name: Archive the exact reviewed source
