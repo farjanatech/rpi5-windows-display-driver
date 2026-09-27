@@ -9,6 +9,7 @@
 #pragma warning(pop)
 #include "../core/framebuffer.h"
 #include "../core/display_handoff.h"
+#include "../core/acpi_handoff.h"
 #include "../core/vsync_timing.h"
 #include "../core/registration_contract.h"
 /* Pin the existing, accepted KMDOD ABI; the fix is not a WDDM upgrade. */
@@ -17,11 +18,17 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.9-hzfix"
+#define RP_DRIVER_VERSION "0.1.10-hzfix-acpi"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
 #define RP_LOG(...) RpLog(__VA_ARGS__)
+typedef enum RP_HANDOFF_SOURCE {
+    RpHandoffNone = 0,
+    RpHandoffUefiVariable = 1,
+    RpHandoffAcpiR5dh = 2
+} RP_HANDOFF_SOURCE;
+
 typedef struct RP_ADAPTER {
     PDEVICE_OBJECT Pdo;
     DXGKRNL_INTERFACE Dxgk;
@@ -30,6 +37,7 @@ typedef struct RP_ADAPTER {
     BOOLEAN FirmwareTimingValid;
     BOOLEAN FirmwareEdidValid;
     ULONG FirmwareVariableAttributes;
+    RP_HANDOFF_SOURCE FirmwareHandoffSource;
     BOOLEAN VSyncAdvertised;
     BOOLEAN VSyncHardwareReady;
     ULONG PixelValveIndex;
@@ -56,6 +64,13 @@ BOOLEAN RpEnter(RP_ADAPTER *a);
 VOID RpLeave(RP_ADAPTER *a);
 VOID RpFlush(RP_ADAPTER *a, RP_RECT rect);
 VOID RpBlank(RP_ADAPTER *a);
+NTSTATUS RpHandoffInitialize(VOID);
+NTSTATUS RpReadDisplayHandoff(
+    RP_DISPLAY_HANDOFF *handoff,
+    PULONG variableAttributes,
+    RP_HANDOFF_SOURCE *source,
+    ULONG width,
+    ULONG height);
 BOOLEAN RpVSyncRegistrationAvailable(VOID);
 NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources);
 VOID RpVSyncShutdown(RP_ADAPTER *a);
