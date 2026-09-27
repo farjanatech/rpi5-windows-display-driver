@@ -34,7 +34,7 @@ $sys = Join-Path $Out 'package/Rpi5Display.sys'
 $pdb = Join-Path $Out 'Rpi5Display.pdb'
 Run 'link.exe' (@('/nologo','/DRIVER','/SUBSYSTEM:NATIVE,10.00','/MACHINE:ARM64','/ENTRY:GsDriverEntry',
     '/NODEFAULTLIB','/DYNAMICBASE','/NXCOMPAT','/INTEGRITYCHECK','/GUARD:CF','/DEBUG:FULL',
-    "/OUT:$sys","/PDB:$pdb","/LIBPATH:$libs",'ntoskrnl.lib','hal.lib','displib.lib',
+    "/OUT:$sys","/PDB:$pdb","/LIBPATH:$libs",'ntoskrnl.lib','hal.lib','displib.lib','Aux_Klib.lib',
     'BufferOverflowFastFailK.lib','libcntpr.lib') + $objects)
 Run 'dumpbin.exe' @('/headers',$sys)
 Run 'dumpbin.exe' @('/imports',$sys)
