@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.12 VSync delivery contract."""
+"""Static regression for the 0.1.13 KMDOD VSync-control contract."""
 
 from pathlib import Path
 
@@ -8,8 +8,8 @@ source = Path("driver/vsync.c").read_text(encoding="utf-8")
 header = Path("driver/display.h").read_text(encoding="utf-8")
 inf = Path("package/Rpi5Display.inf").read_text(encoding="utf-8")
 
-assert 'RP_DRIVER_VERSION "0.1.12-hzfix-vsync-delivery"' in header
-assert "DriverVer=09/27/2026,0.1.12.0" in inf
+assert 'RP_DRIVER_VERSION "0.1.13-hzfix-kmdod-vsync-control"' in header
+assert "DriverVer=09/27/2026,0.1.13.0" in inf
 
 assert "RP_VSYNC_PHASE_PROVISIONAL" in source
 assert "RP_VSYNC_PHASE_HARDWARE" in source
@@ -34,16 +34,25 @@ flag_pos = enable_block.index("InterlockedExchange(&a->VSyncInterruptEnabled, 1)
 inten_pos = enable_block.index("enable | RP_PV_INT_VFP_START")
 assert flag_pos < inten_pos
 
-# STATUS_UNSUCCESSFUL from DxgkCbSynchronizeExecution gets the documented
-# interrupt-not-connected-yet fallback, while the result is persisted.
+# Windows 11's KMDOD path was observed requesting DISPLAYONLY_VSYNC (5) in
+# ControlInterrupt. Accept both the generic CRTC value and the KMDOD value.
 control = source.index("NTSTATUS APIENTRY RpControlInterrupt")
 scan = source.index("NTSTATUS APIENTRY RpGetScanLine")
 control_block = source[control:scan]
+assert "interruptType != DXGK_INTERRUPT_CRTC_VSYNC &&" in control_block
+assert "interruptType != DXGK_INTERRUPT_DISPLAYONLY_VSYNC" in control_block
+assert "ControlInterrupt VSYNC type=%u" in control_block
+
+# STATUS_UNSUCCESSFUL from DxgkCbSynchronizeExecution gets the documented
+# interrupt-not-connected-yet fallback, while the result is persisted.
 assert "synchronizeStatus == STATUS_UNSUCCESSFUL" in control_block
 assert "usedDirectFallback = TRUE;" in control_block
 assert "applied = RpSetVSyncSynchronized(&control);" in control_block
 assert "RpRecordControlInterruptResult" in control_block
 assert "Rpi5DisplayVSyncLastControlPvInten" in source
+assert "Rpi5DisplayVSyncLastEnableType" in source
+assert "Rpi5DisplayVSyncLastEnablePvInten" in source
+assert "Rpi5DisplayVSyncLastDisableType" in source
 
 # GetScanLine accepts provisional phase, but only a real ISR upgrades it to
 # a hardware anchor reported to dxgkrnl.
@@ -61,4 +70,4 @@ shutdown_block = source[shutdown:control]
 assert 'L"Rpi5DisplayVSyncAnchorReady", 0' not in shutdown_block
 assert "Rpi5DisplayVSyncInterruptEnabledBeforeStop" in shutdown_block
 
-print("PASS: 0.1.12 makes VSync enable robust and preserves IRQ-delivery evidence")
+print("PASS: 0.1.13 accepts KMDOD DISPLAYONLY_VSYNC control and preserves enable evidence")

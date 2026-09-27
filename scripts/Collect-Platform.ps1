@@ -190,6 +190,22 @@ foreach ($device in $devices) {
                 VSyncLastControlStatus=$key.GetValue('Rpi5DisplayVSyncLastControlStatus',$null);
                 VSyncLastControlPvInten=$key.GetValue('Rpi5DisplayVSyncLastControlPvInten',$null);
                 VSyncLastControlPvIntstat=$key.GetValue('Rpi5DisplayVSyncLastControlPvIntstat',$null);
+                VSyncLastEnableType=$key.GetValue('Rpi5DisplayVSyncLastEnableType',$null);
+                VSyncLastEnableSyncStatus=$key.GetValue('Rpi5DisplayVSyncLastEnableSyncStatus',$null);
+                VSyncLastEnableSyncReturn=$key.GetValue('Rpi5DisplayVSyncLastEnableSyncReturn',$null);
+                VSyncLastEnableFallback=$key.GetValue('Rpi5DisplayVSyncLastEnableFallback',$null);
+                VSyncLastEnableStatus=$key.GetValue('Rpi5DisplayVSyncLastEnableStatus',$null);
+                VSyncLastEnablePvInten=$key.GetValue('Rpi5DisplayVSyncLastEnablePvInten',$null);
+                VSyncLastEnablePvIntstat=$key.GetValue('Rpi5DisplayVSyncLastEnablePvIntstat',$null);
+                VSyncLastEnableActive=$key.GetValue('Rpi5DisplayVSyncLastEnableActive',$null);
+                VSyncLastEnableHardwareReady=$key.GetValue('Rpi5DisplayVSyncLastEnableHardwareReady',$null);
+                VSyncLastDisableType=$key.GetValue('Rpi5DisplayVSyncLastDisableType',$null);
+                VSyncLastDisableSyncStatus=$key.GetValue('Rpi5DisplayVSyncLastDisableSyncStatus',$null);
+                VSyncLastDisableSyncReturn=$key.GetValue('Rpi5DisplayVSyncLastDisableSyncReturn',$null);
+                VSyncLastDisableFallback=$key.GetValue('Rpi5DisplayVSyncLastDisableFallback',$null);
+                VSyncLastDisableStatus=$key.GetValue('Rpi5DisplayVSyncLastDisableStatus',$null);
+                VSyncLastDisablePvInten=$key.GetValue('Rpi5DisplayVSyncLastDisablePvInten',$null);
+                VSyncLastDisablePvIntstat=$key.GetValue('Rpi5DisplayVSyncLastDisablePvIntstat',$null);
                 VSyncPvIntenBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntenBeforeStop',$null);
                 VSyncPvIntstatBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntstatBeforeStop',$null)
             }

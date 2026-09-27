@@ -139,6 +139,43 @@ static VOID RpRecordControlInterruptResult(
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled",
                        (ULONG)InterlockedCompareExchange(
                            &a->VSyncInterruptEnabled, 0, 0));
+
+    /*
+     * Keep the enable and disable records independently. 0.1.12 only kept
+     * "last control", so Windows' watchdog-driven disable overwrote the exact
+     * enable request that caused the failure.
+     */
+    if (enableInterrupt) {
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableType",
+                           (ULONG)interruptType);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableSyncStatus",
+                           (ULONG)synchronizeStatus);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableSyncReturn",
+                           synchronizeReturn ? 1u : 0u);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableFallback",
+                           usedDirectFallback ? 1u : 0u);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableStatus",
+                           (ULONG)finalStatus);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnablePvInten", inten);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnablePvIntstat", intstat);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableActive",
+                           (ULONG)InterlockedCompareExchange(&a->Active, 0, 0));
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableHardwareReady",
+                           a->VSyncHardwareReady ? 1u : 0u);
+    } else {
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableType",
+                           (ULONG)interruptType);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableSyncStatus",
+                           (ULONG)synchronizeStatus);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableSyncReturn",
+                           synchronizeReturn ? 1u : 0u);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableFallback",
+                           usedDirectFallback ? 1u : 0u);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableStatus",
+                           (ULONG)finalStatus);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisablePvInten", inten);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisablePvIntstat", intstat);
+    }
 }
 
 BOOLEAN RpVSyncRegistrationAvailable(VOID)
@@ -295,6 +332,16 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
                        (ULONG)STATUS_PENDING);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlStatus",
                        (ULONG)STATUS_PENDING);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableType", MAXULONG);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableSyncStatus",
+                       (ULONG)STATUS_PENDING);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableStatus",
+                       (ULONG)STATUS_PENDING);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableType", MAXULONG);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableSyncStatus",
+                       (ULONG)STATUS_PENDING);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastDisableStatus",
+                       (ULONG)STATUS_PENDING);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValveIndex", a->PixelValveIndex);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysLow", (ULONG)expectedBase);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysHigh",
@@ -443,11 +490,21 @@ NTSTATUS APIENTRY RpControlInterrupt(
         InterlockedIncrement64(&a->VSyncControlDisableRequests);
     }
 
-    if (interruptType != DXGK_INTERRUPT_CRTC_VSYNC) {
+    /*
+     * The generic DxgkDdiControlInterrupt documentation describes
+     * DXGK_INTERRUPT_CRTC_VSYNC (3). On the Windows 11 KMDOD path exercised by
+     * this driver, dxgkrnl actually requests DXGK_INTERRUPT_DISPLAYONLY_VSYNC
+     * (5). Both requests control the same physical vertical-retrace source;
+     * the ISR continues to notify dxgkrnl with DISPLAYONLY_VSYNC.
+     */
+    if (interruptType != DXGK_INTERRUPT_CRTC_VSYNC &&
+        interruptType != DXGK_INTERRUPT_DISPLAYONLY_VSYNC) {
         finalStatus = STATUS_NOT_IMPLEMENTED;
         RpRecordControlInterruptResult(
             a, interruptType, enableInterrupt, synchronizeStatus, FALSE,
             FALSE, finalStatus);
+        RP_LOG("ControlInterrupt unsupported type=%u enable=%u final=0x%08lx\n",
+               (UINT)interruptType, enableInterrupt, finalStatus);
         return finalStatus;
     }
 
@@ -518,8 +575,8 @@ NTSTATUS APIENTRY RpControlInterrupt(
         a, interruptType, enableInterrupt, synchronizeStatus, synchronized,
         usedDirectFallback, finalStatus);
 
-    RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu syncStatus=0x%08lx syncReturn=%u fallback=%u final=0x%08lx inten=0x%08lx intstat=0x%08lx\n",
-           enableInterrupt, a->PixelValveIndex, synchronizeStatus,
+    RP_LOG("ControlInterrupt VSYNC type=%u enable=%u pv=%lu syncStatus=0x%08lx syncReturn=%u fallback=%u final=0x%08lx inten=0x%08lx intstat=0x%08lx\n",
+           (UINT)interruptType, enableInterrupt, a->PixelValveIndex, synchronizeStatus,
            synchronized, usedDirectFallback, finalStatus,
            READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN)),
            READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT)));
