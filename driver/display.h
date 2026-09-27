@@ -44,6 +44,7 @@ typedef struct RP_ADAPTER {
     PVOID PixelValveRegs;
     SIZE_T PixelValveBytes;
     volatile LONG VSyncInterruptEnabled;
+    volatile LONG VSyncAnchorReported;
     volatile LONG64 LastVSyncQpc;
     LONG64 QpcFrequency;
     volatile LONG64 VSyncCount;
