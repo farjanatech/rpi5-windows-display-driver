@@ -16,8 +16,6 @@
 #define RP_PV_INTEN                   0x24u
 #define RP_PV_INTSTAT                 0x28u
 #define RP_PV_INT_VFP_START           (1u << 7)
-#define RP_VSYNC_PRIME_DELAY_US       50u
-#define RP_VSYNC_PRIME_ATTEMPTS       2000u
 
 static volatile ULONG *RpPvRegister(RP_ADAPTER *a, ULONG offset)
 {
@@ -109,37 +107,12 @@ static PCM_PARTIAL_RESOURCE_DESCRIPTOR RpFindMemoryResource(
     return NULL;
 }
 
-static NTSTATUS RpPrimeVSyncAnchor(RP_ADAPTER *a)
-{
-    ULONG attempt;
-
-    /* Clear a stale VFP-start status before waiting for a fresh hardware edge. */
-    WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT), RP_PV_INT_VFP_START);
-    KeMemoryBarrier();
-
-    for (attempt = 0; attempt < RP_VSYNC_PRIME_ATTEMPTS; ++attempt) {
-        ULONG status = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT));
-        if (status & RP_PV_INT_VFP_START) {
-            LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
-            WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
-                                 RP_PV_INT_VFP_START);
-            KeMemoryBarrier();
-            InterlockedExchange64(&a->LastVSyncQpc, now.QuadPart);
-            return STATUS_SUCCESS;
-        }
-        KeStallExecutionProcessor(RP_VSYNC_PRIME_DELAY_US);
-    }
-
-    return STATUS_IO_TIMEOUT;
-}
-
 NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
 {
     ULONGLONG expectedBase;
     PCM_PARTIAL_RESOURCE_DESCRIPTOR descriptor;
     LARGE_INTEGER frequency;
     ULONG vcontrol;
-    NTSTATUS status;
 
     if (!a || !a->VSyncAdvertised || !a->FirmwareTimingValid) {
         return STATUS_DEVICE_CONFIGURATION_ERROR;
@@ -199,16 +172,13 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
-    status = RpPrimeVSyncAnchor(a);
-    if (!NT_SUCCESS(status)) {
-        RP_LOG("VSync: no PixelValve VFP-start edge observed, status=0x%08lx\n",
-               status);
-        MmUnmapIoSpace(a->PixelValveRegs, a->PixelValveBytes);
-        a->PixelValveRegs = NULL;
-        a->PixelValveBytes = 0;
-        return status;
-    }
-
+    /*
+     * Do not require a VFP edge during StartDevice. The interrupt source is
+     * intentionally disabled until dxgkrnl calls DxgkDdiControlInterrupt.
+     * The first real VFP interrupt after Windows enables CRTC_VSYNC becomes
+     * the phase anchor used by GetScanLine.
+     */
+    InterlockedExchange64(&a->LastVSyncQpc, 0);
     InterlockedExchange(&a->VSyncInterruptEnabled, 0);
     InterlockedExchange64(&a->VSyncCount, 0);
     InterlockedExchange64(&a->ScanLineQueries, 0);
@@ -221,7 +191,7 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysHigh",
                        (ULONG)(expectedBase >> 32));
 
-    RP_LOG("VSync: hardware ready display=%lu pv=%lu base=0x%llx qpcHz=%lld\n",
+    RP_LOG("VSync: hardware ready without startup anchor display=%lu pv=%lu base=0x%llx qpcHz=%lld; waiting for Windows-enabled first VFP edge\n",
            a->FirmwareDisplay.display_number, a->PixelValveIndex,
            expectedBase, a->QpcFrequency);
     return STATUS_SUCCESS;
@@ -244,7 +214,12 @@ static BOOLEAN RpSetVSyncSynchronized(PVOID context)
 
     enable = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
     if (control->Enable) {
-        /* Drop any stale edge before exposing the source to dxgkrnl. */
+        /*
+         * A fresh enable needs a fresh phase anchor. Clear any old timestamp
+         * and stale status before enabling VFP_START. The ISR records the
+         * first real edge and every edge after it.
+         */
+        InterlockedExchange64(&a->LastVSyncQpc, 0);
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                              RP_PV_INT_VFP_START);
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
@@ -256,6 +231,7 @@ static BOOLEAN RpSetVSyncSynchronized(PVOID context)
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                              RP_PV_INT_VFP_START);
         InterlockedExchange(&a->VSyncInterruptEnabled, 0);
+        InterlockedExchange64(&a->LastVSyncQpc, 0);
     }
     KeMemoryBarrier();
     return TRUE;
@@ -360,6 +336,15 @@ NTSTATUS APIENTRY RpGetScanLine(
     }
 
     last = InterlockedCompareExchange64(&a->LastVSyncQpc, 0, 0);
+    if (last == 0) {
+        /*
+         * StartDevice is allowed to complete before Windows enables VSync.
+         * Until the ISR records the first hardware edge, there is no honest
+         * phase from which to report a scan line.
+         */
+        return STATUS_DEVICE_NOT_READY;
+    }
+
     now = KeQueryPerformanceCounter(NULL);
     if (!rp_vsync_scanline_from_qpc(
             (ULONGLONG)a->QpcFrequency,
