@@ -14,6 +14,82 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Collec
 function Read-Optional([scriptblock]$Read) {
     try { & $Read } catch { "UNAVAILABLE: $($_.Exception.Message)" }
 }
+
+function Get-AcpiFirmwareTable([uint32]$TableId) {
+    if (-not ('Rpi5Lab.FirmwareTable' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Rpi5Lab {
+    public static class FirmwareTable {
+        [DllImport("kernel32.dll", SetLastError=true)]
+        public static extern UInt32 GetSystemFirmwareTable(
+            UInt32 provider, UInt32 tableId, IntPtr buffer, UInt32 bufferSize);
+    }
+}
+'@
+    }
+    $provider = [uint32]0x41435049 # 'ACPI'
+    $size = [Rpi5Lab.FirmwareTable]::GetSystemFirmwareTable($provider,$TableId,[IntPtr]::Zero,0)
+    if ($size -eq 0) {
+        return [ordered]@{Present=$false; Win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}
+    }
+    $ptr=[Runtime.InteropServices.Marshal]::AllocHGlobal([int]$size)
+    try {
+        $got=[Rpi5Lab.FirmwareTable]::GetSystemFirmwareTable($provider,$TableId,$ptr,$size)
+        if ($got -eq 0) {
+            return [ordered]@{Present=$false; Win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}
+        }
+        $bytes=New-Object byte[] $got
+        [Runtime.InteropServices.Marshal]::Copy($ptr,$bytes,0,[int]$got)
+        [ordered]@{Present=$true; Bytes=$bytes}
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    }
+}
+function Read-R5dgAcpi {
+    $raw=Get-AcpiFirmwareTable ([uint32]0x47443552) # bytes "R5DG"
+    if (-not $raw.Present) { return $raw }
+    $b=[byte[]]$raw.Bytes
+    if ($b.Length -lt 160) {
+        return [ordered]@{Present=$true; Bytes=$b.Length; ParseError='R5DG shorter than expected 160 bytes'}
+    }
+    $sum=0
+    foreach($v in $b){$sum=($sum+[int]$v)-band 0xff}
+    function U32([int]$o){[BitConverter]::ToUInt32($b,$o)}
+    function U64([int]$o){[BitConverter]::ToUInt64($b,$o)}
+    function Pv([int]$o){
+        [ordered]@{
+            Base=('0x{0:X16}' -f (U64 $o));
+            Control=('0x{0:X8}' -f (U32 ($o+8)));
+            VControl=('0x{0:X8}' -f (U32 ($o+12)));
+            Horza=('0x{0:X8}' -f (U32 ($o+16)));
+            Horzb=('0x{0:X8}' -f (U32 ($o+20)));
+            Verta=('0x{0:X8}' -f (U32 ($o+24)));
+            Vertb=('0x{0:X8}' -f (U32 ($o+28)));
+            Intstat=('0x{0:X8}' -f (U32 ($o+32)))
+        }
+    }
+    [ordered]@{
+        Present=$true; Bytes=$b.Length; ChecksumValid=($sum -eq 0);
+        Revision=[int]$b[8]; DiagVersion=(U32 36);
+        StatusFlags=('0x{0:X8}' -f (U32 40));
+        TimingSource=(U32 44); SelectedPixelValve=(U32 48);
+        LastStatus=('0x{0:X16}' -f (U64 52));
+        FramePeriodNs=(U64 60); DerivedClockKHz=(U32 68);
+        ActiveWidth=(U32 72); ActiveHeight=(U32 76);
+        HTotal=(U32 80); VTotal=(U32 84);
+        PixelValve0=(Pv 88); PixelValve1=(Pv 124)
+    }
+}
+function Read-R5dhAcpi {
+    $raw=Get-AcpiFirmwareTable ([uint32]0x48443552) # bytes "R5DH"
+    if (-not $raw.Present) { return $raw }
+    $b=[byte[]]$raw.Bytes
+    $sum=0
+    foreach($v in $b){$sum=($sum+[int]$v)-band 0xff}
+    [ordered]@{Present=$true; Bytes=$b.Length; ChecksumValid=($sum -eq 0); Revision=if($b.Length -gt 8){[int]$b[8]}else{$null}}
+}
 $os = Get-CimInstance Win32_OperatingSystem
 $computer = Get-CimInstance Win32_ComputerSystem
 $bios = Get-CimInstance Win32_BIOS
@@ -112,6 +188,7 @@ $report = [ordered]@{
     WindowsGraphicsFiles=$graphicsFiles;
     CodeIntegrityOptions=$ci;
     SecureBoot=(Read-Optional { Confirm-SecureBootUEFI });
+    AcpiDisplayHandoff=(Read-Optional { [ordered]@{R5DH=(Read-R5dhAcpi); R5DG=(Read-R5dgAcpi)} });
     DisplayDevices=$adapters;
     VideoControllers=(Read-Optional { Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentBitsPerPixel,CurrentRefreshRate });
     PowerCapabilities=(Read-Optional { & powercfg.exe /a 2>&1 | Out-String });
