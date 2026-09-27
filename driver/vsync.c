@@ -19,9 +19,6 @@
 #define RP_VSYNC_PRIME_DELAY_US       50u
 #define RP_VSYNC_PRIME_ATTEMPTS       2000u
 
-static GUID gRpDisplayHandoffGuid =
-    { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
-
 static volatile ULONG *RpPvRegister(RP_ADAPTER *a, ULONG offset)
 {
     return (volatile ULONG *)((volatile UCHAR *)a->PixelValveRegs + offset);
@@ -60,23 +57,25 @@ static VOID RpRecordVSyncCounters(RP_ADAPTER *a)
 BOOLEAN RpVSyncRegistrationAvailable(VOID)
 {
     RP_DISPLAY_HANDOFF handoff;
-    UNICODE_STRING name = RTL_CONSTANT_STRING(L"Rpi5DisplayHandoff");
-    ULONG bytes = sizeof(handoff);
+    RP_HANDOFF_SOURCE source = RpHandoffNone;
     ULONG attributes = 0;
     NTSTATUS status;
 
     RtlZeroMemory(&handoff, sizeof(handoff));
-    status = ExGetFirmwareEnvironmentVariable(
-        &name, &gRpDisplayHandoffGuid, &handoff, &bytes, &attributes);
-
-    if (!NT_SUCCESS(status) ||
-        bytes != sizeof(handoff) ||
-        !rp_display_handoff_attributes_valid(attributes) ||
-        !rp_display_handoff_valid(&handoff,
-                                  handoff.timing.hdisplay,
-                                  handoff.timing.vdisplay)) {
+    status = RpReadDisplayHandoff(
+        &handoff,
+        &attributes,
+        &source,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        RP_LOG("VSync registration handoff unavailable status=0x%08lx\n", status);
         return FALSE;
     }
+
+    RP_LOG("VSync registration handoff source=%u display=%lu clockKHz=%lu total=%ux%u\n",
+           (UINT)source, handoff.display_number, handoff.timing.clock_khz,
+           handoff.timing.htotal, handoff.timing.vtotal);
 
     /* This first hardware implementation is intentionally limited to Pi 5 HDMI. */
     return handoff.display_number == 2u || handoff.display_number == 7u;
