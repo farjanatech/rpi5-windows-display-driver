@@ -17,6 +17,10 @@
 #define RP_PV_INTSTAT                 0x28u
 #define RP_PV_INT_VFP_START           (1u << 7)
 
+#define RP_VSYNC_PHASE_NONE            0L
+#define RP_VSYNC_PHASE_PROVISIONAL     1L
+#define RP_VSYNC_PHASE_HARDWARE        2L
+
 static volatile ULONG *RpPvRegister(RP_ADAPTER *a, ULONG offset)
 {
     return (volatile ULONG *)((volatile UCHAR *)a->PixelValveRegs + offset);
@@ -42,14 +46,99 @@ static VOID RpRecordVSyncCounters(RP_ADAPTER *a)
 {
     ULONGLONG count;
     ULONGLONG queries;
+    ULONGLONG provisionalQueries;
+    ULONGLONG requests;
+    ULONGLONG enables;
+    ULONGLONG disables;
+    ULONGLONG fallbacks;
+    ULONGLONG anchor;
+    ULONG phase;
 
     if (!a) return;
     count = (ULONGLONG)InterlockedCompareExchange64(&a->VSyncCount, 0, 0);
     queries = (ULONGLONG)InterlockedCompareExchange64(&a->ScanLineQueries, 0, 0);
+    provisionalQueries = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncProvisionalScanLineQueries, 0, 0);
+    requests = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncControlRequests, 0, 0);
+    enables = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncControlEnableRequests, 0, 0);
+    disables = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncControlDisableRequests, 0, 0);
+    fallbacks = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncControlDirectFallbacks, 0, 0);
+    anchor = (ULONGLONG)InterlockedCompareExchange64(&a->LastVSyncQpc, 0, 0);
+    phase = (ULONG)InterlockedCompareExchange(&a->VSyncPhaseSource, 0, 0);
+
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptsLow", (ULONG)count);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptsHigh", (ULONG)(count >> 32));
     RpWriteDeviceDword(a, L"Rpi5DisplayScanLineQueriesLow", (ULONG)queries);
     RpWriteDeviceDword(a, L"Rpi5DisplayScanLineQueriesHigh", (ULONG)(queries >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalQueriesLow",
+                       (ULONG)provisionalQueries);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalQueriesHigh",
+                       (ULONG)(provisionalQueries >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlRequestsLow", (ULONG)requests);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlRequestsHigh",
+                       (ULONG)(requests >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlEnableRequestsLow",
+                       (ULONG)enables);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlEnableRequestsHigh",
+                       (ULONG)(enables >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlDisableRequestsLow",
+                       (ULONG)disables);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlDisableRequestsHigh",
+                       (ULONG)(disables >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlFallbacksLow",
+                       (ULONG)fallbacks);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncControlFallbacksHigh",
+                       (ULONG)(fallbacks >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncPhaseSource", phase);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady",
+                       (phase == RP_VSYNC_PHASE_HARDWARE && count != 0) ? 1u : 0u);
+    if (phase == RP_VSYNC_PHASE_HARDWARE && count != 0) {
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorQpcLow", (ULONG)anchor);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorQpcHigh",
+                           (ULONG)(anchor >> 32));
+    }
+}
+
+static VOID RpRecordControlInterruptResult(
+    RP_ADAPTER *a,
+    DXGK_INTERRUPT_TYPE interruptType,
+    BOOLEAN enableInterrupt,
+    NTSTATUS synchronizeStatus,
+    BOOLEAN synchronizeReturn,
+    BOOLEAN usedDirectFallback,
+    NTSTATUS finalStatus)
+{
+    ULONG inten = 0;
+    ULONG intstat = 0;
+
+    if (!a) return;
+    RpRecordVSyncCounters(a);
+    if (a->PixelValveRegs) {
+        inten = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
+        intstat = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT));
+    }
+
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlType",
+                       (ULONG)interruptType);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlEnable",
+                       enableInterrupt ? 1u : 0u);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlSyncStatus",
+                       (ULONG)synchronizeStatus);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlSyncReturn",
+                       synchronizeReturn ? 1u : 0u);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlFallback",
+                       usedDirectFallback ? 1u : 0u);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlStatus",
+                       (ULONG)finalStatus);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlPvInten", inten);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlPvIntstat", intstat);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled",
+                       (ULONG)InterlockedCompareExchange(
+                           &a->VSyncInterruptEnabled, 0, 0));
 }
 
 BOOLEAN RpVSyncRegistrationAvailable(VOID)
@@ -112,6 +201,7 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
     ULONGLONG expectedBase;
     PCM_PARTIAL_RESOURCE_DESCRIPTOR descriptor;
     LARGE_INTEGER frequency;
+    LARGE_INTEGER seed;
     ULONG vcontrol;
 
     if (!a || !a->VSyncAdvertised || !a->FirmwareTimingValid) {
@@ -163,9 +253,9 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
                          RP_PV_INT_VFP_START);
     KeMemoryBarrier();
 
-    (VOID)KeQueryPerformanceCounter(&frequency);
+    seed = KeQueryPerformanceCounter(&frequency);
     a->QpcFrequency = frequency.QuadPart;
-    if (a->QpcFrequency <= 0) {
+    if (a->QpcFrequency <= 0 || seed.QuadPart <= 0) {
         MmUnmapIoSpace(a->PixelValveRegs, a->PixelValveBytes);
         a->PixelValveRegs = NULL;
         a->PixelValveBytes = 0;
@@ -173,36 +263,54 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
     }
 
     /*
-     * Do not require a VFP edge during StartDevice. The interrupt source is
-     * intentionally disabled until dxgkrnl calls DxgkDdiControlInterrupt.
-     * The first real VFP interrupt after Windows enables CRTC_VSYNC becomes
-     * the phase anchor used by GetScanLine.
+     * Windows can query scan-line position before the first hardware VFP edge.
+     * Seed a timing-only provisional phase from the validated firmware mode so
+     * GetScanLine can answer immediately. This is never reported as a hardware
+     * VSync anchor; the ISR replaces it with the first real VFP_START edge.
      */
-    InterlockedExchange64(&a->LastVSyncQpc, 0);
+    InterlockedExchange64(&a->LastVSyncQpc, seed.QuadPart);
+    InterlockedExchange(&a->VSyncPhaseSource, RP_VSYNC_PHASE_PROVISIONAL);
     InterlockedExchange(&a->VSyncInterruptEnabled, 0);
     InterlockedExchange(&a->VSyncAnchorReported, 0);
+    InterlockedExchange(&a->VSyncProvisionalReported, 0);
     InterlockedExchange64(&a->VSyncCount, 0);
     InterlockedExchange64(&a->ScanLineQueries, 0);
+    InterlockedExchange64(&a->VSyncProvisionalScanLineQueries, 0);
+    InterlockedExchange64(&a->VSyncControlRequests, 0);
+    InterlockedExchange64(&a->VSyncControlEnableRequests, 0);
+    InterlockedExchange64(&a->VSyncControlDisableRequests, 0);
+    InterlockedExchange64(&a->VSyncControlDirectFallbacks, 0);
     a->VSyncHardwareReady = TRUE;
 
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAdvertised", 1);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncHardwareReady", 1);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled", 0);
-    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalPhaseReady", 1);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalSeedQpcLow",
+                       (ULONG)seed.QuadPart);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalSeedQpcHigh",
+                       (ULONG)((ULONGLONG)seed.QuadPart >> 32));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlType", MAXULONG);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlSyncStatus",
+                       (ULONG)STATUS_PENDING);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastControlStatus",
+                       (ULONG)STATUS_PENDING);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValveIndex", a->PixelValveIndex);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysLow", (ULONG)expectedBase);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysHigh",
                        (ULONG)(expectedBase >> 32));
+    RpRecordVSyncCounters(a);
 
-    RP_LOG("VSync: hardware ready without startup anchor display=%lu pv=%lu base=0x%llx qpcHz=%lld; waiting for Windows-enabled first VFP edge\n",
+    RP_LOG("VSync: hardware ready with provisional scanline phase display=%lu pv=%lu base=0x%llx qpcHz=%lld seed=%lld; waiting for Windows-enabled first VFP edge\n",
            a->FirmwareDisplay.display_number, a->PixelValveIndex,
-           expectedBase, a->QpcFrequency);
+           expectedBase, a->QpcFrequency, seed.QuadPart);
     return STATUS_SUCCESS;
 }
 
 typedef struct RP_VSYNC_CONTROL_CONTEXT {
     RP_ADAPTER *Adapter;
     BOOLEAN Enable;
+    LONG64 ProvisionalQpc;
 } RP_VSYNC_CONTROL_CONTEXT;
 
 static BOOLEAN RpSetVSyncSynchronized(PVOID context)
@@ -217,26 +325,35 @@ static BOOLEAN RpSetVSyncSynchronized(PVOID context)
 
     enable = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
     if (control->Enable) {
+        if (control->ProvisionalQpc <= 0) return FALSE;
+
         /*
-         * A fresh enable needs a fresh phase anchor. Clear any old timestamp
-         * and stale status before enabling VFP_START. The ISR records the
-         * first real edge and every edge after it.
+         * Publish the software state before unmasking VFP_START. Otherwise a
+         * first edge can race the old 0.1.11 ordering and the ISR will reject
+         * the interrupt because VSyncInterruptEnabled is still zero.
          */
-        InterlockedExchange64(&a->LastVSyncQpc, 0);
+        InterlockedExchange64(&a->LastVSyncQpc, control->ProvisionalQpc);
+        InterlockedExchange(&a->VSyncPhaseSource, RP_VSYNC_PHASE_PROVISIONAL);
+        InterlockedExchange(&a->VSyncAnchorReported, 0);
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                              RP_PV_INT_VFP_START);
+        InterlockedExchange(&a->VSyncInterruptEnabled, 1);
+        KeMemoryBarrier();
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
                              enable | RP_PV_INT_VFP_START);
-        InterlockedExchange(&a->VSyncInterruptEnabled, 1);
+        KeMemoryBarrier();
     } else {
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN),
                              enable & ~RP_PV_INT_VFP_START);
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                              RP_PV_INT_VFP_START);
+        KeMemoryBarrier();
         InterlockedExchange(&a->VSyncInterruptEnabled, 0);
-        InterlockedExchange64(&a->LastVSyncQpc, 0);
+        /*
+         * Keep the last timing phase for diagnostics/GetScanLine. A later
+         * enable always reseeds a provisional phase before unmasking the IRQ.
+         */
     }
-    KeMemoryBarrier();
     return TRUE;
 }
 
@@ -245,15 +362,34 @@ static BOOLEAN RpDisableVSyncSynchronized(PVOID context)
     RP_VSYNC_CONTROL_CONTEXT control;
     control.Adapter = (RP_ADAPTER *)context;
     control.Enable = FALSE;
+    control.ProvisionalQpc = 0;
     return RpSetVSyncSynchronized(&control);
 }
 
 VOID RpVSyncShutdown(RP_ADAPTER *a)
 {
     BOOLEAN synchronized = FALSE;
+    ULONG enabledBeforeStop;
+    ULONG intenBeforeStop;
+    ULONG intstatBeforeStop;
 
     if (!a || !a->PixelValveRegs) return;
 
+    enabledBeforeStop = (ULONG)InterlockedCompareExchange(
+        &a->VSyncInterruptEnabled, 0, 0);
+    intenBeforeStop = READ_REGISTER_ULONG(
+        (PULONG)RpPvRegister(a, RP_PV_INTEN));
+    intstatBeforeStop = READ_REGISTER_ULONG(
+        (PULONG)RpPvRegister(a, RP_PV_INTSTAT));
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabledBeforeStop",
+                       enabledBeforeStop);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncPvIntenBeforeStop",
+                       intenBeforeStop);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncPvIntstatBeforeStop",
+                       intstatBeforeStop);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncPhaseSourceAtStop",
+                       (ULONG)InterlockedCompareExchange(
+                           &a->VSyncPhaseSource, 0, 0));
     RpRecordVSyncCounters(a);
 
     if (a->Dxgk.DxgkCbSynchronizeExecution && a->Dxgk.DeviceHandle) {
@@ -271,13 +407,15 @@ VOID RpVSyncShutdown(RP_ADAPTER *a)
     }
 
     a->VSyncHardwareReady = FALSE;
-    InterlockedExchange(&a->VSyncAnchorReported, 0);
     MmUnmapIoSpace(a->PixelValveRegs, a->PixelValveBytes);
     a->PixelValveRegs = NULL;
     a->PixelValveBytes = 0;
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncHardwareReady", 0);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled", 0);
-    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
+    /*
+     * Do not erase AnchorReady/counters here. They are post-mortem evidence
+     * for the session that Windows just stopped.
+     */
 }
 
 NTSTATUS APIENTRY RpControlInterrupt(
@@ -288,43 +426,104 @@ NTSTATUS APIENTRY RpControlInterrupt(
     RP_ADAPTER *a = (RP_ADAPTER *)context;
     RP_VSYNC_CONTROL_CONTEXT control;
     BOOLEAN synchronized = FALSE;
-    NTSTATUS status;
+    BOOLEAN applied = FALSE;
+    BOOLEAN usedDirectFallback = FALSE;
+    NTSTATUS synchronizeStatus = STATUS_NOT_SUPPORTED;
+    NTSTATUS finalStatus;
+    LARGE_INTEGER seed;
 
     PAGED_CODE();
 
     if (!a) return STATUS_INVALID_PARAMETER;
-    /*
-     * The legacy ControlInterrupt DDI requests CRTC_VSYNC. KMDODs report the
-     * corresponding hardware event back with DISPLAYONLY_VSYNC.
-     */
-    if (interruptType != DXGK_INTERRUPT_CRTC_VSYNC) {
-        return STATUS_NOT_IMPLEMENTED;
+
+    InterlockedIncrement64(&a->VSyncControlRequests);
+    if (enableInterrupt) {
+        InterlockedIncrement64(&a->VSyncControlEnableRequests);
+    } else {
+        InterlockedIncrement64(&a->VSyncControlDisableRequests);
     }
+
+    if (interruptType != DXGK_INTERRUPT_CRTC_VSYNC) {
+        finalStatus = STATUS_NOT_IMPLEMENTED;
+        RpRecordControlInterruptResult(
+            a, interruptType, enableInterrupt, synchronizeStatus, FALSE,
+            FALSE, finalStatus);
+        return finalStatus;
+    }
+
     if (!a->VSyncHardwareReady || !a->PixelValveRegs ||
         !InterlockedCompareExchange(&a->Active, 0, 0) ||
-        !a->Dxgk.DxgkCbSynchronizeExecution || !a->Dxgk.DeviceHandle) {
-        return STATUS_DEVICE_NOT_READY;
+        !a->Dxgk.DeviceHandle) {
+        finalStatus = STATUS_DEVICE_NOT_READY;
+        RpRecordControlInterruptResult(
+            a, interruptType, enableInterrupt, synchronizeStatus, FALSE,
+            FALSE, finalStatus);
+        return finalStatus;
     }
 
     control.Adapter = a;
     control.Enable = enableInterrupt;
-    status = a->Dxgk.DxgkCbSynchronizeExecution(
-        a->Dxgk.DeviceHandle,
-        RpSetVSyncSynchronized,
-        &control,
-        0,
-        &synchronized);
-    if (!NT_SUCCESS(status)) return status;
-    if (!synchronized) return STATUS_UNSUCCESSFUL;
+    control.ProvisionalQpc = 0;
+    if (enableInterrupt) {
+        seed = KeQueryPerformanceCounter(NULL);
+        if (seed.QuadPart <= 0) {
+            finalStatus = STATUS_DEVICE_CONFIGURATION_ERROR;
+            RpRecordControlInterruptResult(
+                a, interruptType, enableInterrupt, synchronizeStatus, FALSE,
+                FALSE, finalStatus);
+            return finalStatus;
+        }
+        control.ProvisionalQpc = seed.QuadPart;
+    }
 
-    InterlockedExchange(&a->VSyncAnchorReported, 0);
-    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled",
-                       enableInterrupt ? 1u : 0u);
-    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
+    if (a->Dxgk.DxgkCbSynchronizeExecution) {
+        synchronizeStatus = a->Dxgk.DxgkCbSynchronizeExecution(
+            a->Dxgk.DeviceHandle,
+            RpSetVSyncSynchronized,
+            &control,
+            0,
+            &synchronized);
+        if (NT_SUCCESS(synchronizeStatus) && synchronized) {
+            applied = TRUE;
+        } else if (synchronizeStatus == STATUS_UNSUCCESSFUL) {
+            /*
+             * Microsoft documents STATUS_UNSUCCESSFUL when execution cannot be
+             * synchronized, including when the interrupt is not connected yet.
+             * INTEN is not touched by our ISR, so applying this tiny mask update
+             * directly is race-safe and lets a later-connected IRQ see VFP_START.
+             */
+            usedDirectFallback = TRUE;
+            InterlockedIncrement64(&a->VSyncControlDirectFallbacks);
+            applied = RpSetVSyncSynchronized(&control);
+        }
+    } else {
+        /*
+         * Keep the same narrow direct path if the callback is absent from the
+         * copied interface. The resulting condition is persisted explicitly.
+         */
+        usedDirectFallback = TRUE;
+        InterlockedIncrement64(&a->VSyncControlDirectFallbacks);
+        applied = RpSetVSyncSynchronized(&control);
+    }
 
-    RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu\n",
-           enableInterrupt, a->PixelValveIndex);
-    return STATUS_SUCCESS;
+    if (applied) {
+        finalStatus = STATUS_SUCCESS;
+    } else if (NT_SUCCESS(synchronizeStatus)) {
+        finalStatus = STATUS_UNSUCCESSFUL;
+    } else {
+        finalStatus = synchronizeStatus;
+    }
+
+    RpRecordControlInterruptResult(
+        a, interruptType, enableInterrupt, synchronizeStatus, synchronized,
+        usedDirectFallback, finalStatus);
+
+    RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu syncStatus=0x%08lx syncReturn=%u fallback=%u final=0x%08lx inten=0x%08lx intstat=0x%08lx\n",
+           enableInterrupt, a->PixelValveIndex, synchronizeStatus,
+           synchronized, usedDirectFallback, finalStatus,
+           READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN)),
+           READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT)));
+    return finalStatus;
 }
 
 NTSTATUS APIENTRY RpGetScanLine(
@@ -335,6 +534,7 @@ NTSTATUS APIENTRY RpGetScanLine(
     LONG64 last;
     LARGE_INTEGER now;
     ULONG line;
+    LONG phaseSource;
     int inBlank;
 
     PAGED_CODE();
@@ -347,16 +547,13 @@ NTSTATUS APIENTRY RpGetScanLine(
     }
 
     last = InterlockedCompareExchange64(&a->LastVSyncQpc, 0, 0);
-    if (last == 0) {
-        /*
-         * StartDevice is allowed to complete before Windows enables VSync.
-         * Until the ISR records the first hardware edge, there is no honest
-         * phase from which to report a scan line.
-         */
+    phaseSource = InterlockedCompareExchange(&a->VSyncPhaseSource, 0, 0);
+    if (last == 0 || phaseSource == RP_VSYNC_PHASE_NONE) {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    if (InterlockedCompareExchange(&a->VSyncAnchorReported, 1, 0) == 0) {
+    if (phaseSource == RP_VSYNC_PHASE_HARDWARE &&
+        InterlockedCompareExchange(&a->VSyncAnchorReported, 1, 0) == 0) {
         ULONGLONG anchor = (ULONGLONG)last;
         ULONGLONG count = (ULONGLONG)InterlockedCompareExchange64(
             &a->VSyncCount, 0, 0);
@@ -369,6 +566,12 @@ NTSTATUS APIENTRY RpGetScanLine(
                            (ULONG)(count >> 32));
         RP_LOG("VSync: first Windows-enabled hardware anchor observed pv=%lu qpc=%lld interrupts=%lld\n",
                a->PixelValveIndex, last, (LONG64)count);
+    } else if (phaseSource == RP_VSYNC_PHASE_PROVISIONAL &&
+               InterlockedCompareExchange(
+                   &a->VSyncProvisionalReported, 1, 0) == 0) {
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncProvisionalPhaseUsed", 1);
+        RP_LOG("VSync: GetScanLine using provisional timing phase pv=%lu qpc=%lld\n",
+               a->PixelValveIndex, last);
     }
 
     now = KeQueryPerformanceCounter(NULL);
@@ -388,6 +591,9 @@ NTSTATUS APIENTRY RpGetScanLine(
     scan->InVerticalBlank = inBlank ? TRUE : FALSE;
     scan->ScanLine = inBlank ? 0u : line;
     InterlockedIncrement64(&a->ScanLineQueries);
+    if (phaseSource == RP_VSYNC_PHASE_PROVISIONAL) {
+        InterlockedIncrement64(&a->VSyncProvisionalScanLineQueries);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -412,17 +618,25 @@ BOOLEAN NTAPI RpInterrupt(PVOID context, ULONG messageNumber)
     }
 
     now = KeQueryPerformanceCounter(NULL);
-    InterlockedExchange64(&a->LastVSyncQpc, now.QuadPart);
 
     WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                          RP_PV_INT_VFP_START);
     KeMemoryBarrier();
+
+    /*
+     * The first real VFP_START replaces the provisional phase, and every later
+     * edge refreshes the hardware anchor. Count it before notifying dxgkrnl so
+     * StopDevice can preserve proof that the ISR was actually reached.
+     */
+    InterlockedExchange64(&a->LastVSyncQpc, now.QuadPart);
+    InterlockedExchange(&a->VSyncPhaseSource, RP_VSYNC_PHASE_HARDWARE);
+    InterlockedExchange(&a->VSyncAnchorReported, 0);
+    InterlockedIncrement64(&a->VSyncCount);
 
     RtlZeroMemory(&notify, sizeof(notify));
     notify.InterruptType = DXGK_INTERRUPT_DISPLAYONLY_VSYNC;
     notify.DisplayOnlyVsync.VidPnTargetId = 0;
     a->Dxgk.DxgkCbNotifyInterrupt(a->Dxgk.DeviceHandle, &notify);
     (VOID)a->Dxgk.DxgkCbQueueDpc(a->Dxgk.DeviceHandle);
-    InterlockedIncrement64(&a->VSyncCount);
     return TRUE;
 }

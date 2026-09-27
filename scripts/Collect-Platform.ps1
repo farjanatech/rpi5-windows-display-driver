@@ -155,16 +155,43 @@ foreach ($device in $devices) {
                 VSyncAdvertised=$key.GetValue('Rpi5DisplayVSyncAdvertised',$null);
                 VSyncHardwareReady=$key.GetValue('Rpi5DisplayVSyncHardwareReady',$null);
                 VSyncInterruptEnabled=$key.GetValue('Rpi5DisplayVSyncInterruptEnabled',$null);
+                VSyncInterruptEnabledBeforeStop=$key.GetValue('Rpi5DisplayVSyncInterruptEnabledBeforeStop',$null);
+                VSyncPhaseSource=$key.GetValue('Rpi5DisplayVSyncPhaseSource',$null);
+                VSyncPhaseSourceAtStop=$key.GetValue('Rpi5DisplayVSyncPhaseSourceAtStop',$null);
                 VSyncAnchorReady=$key.GetValue('Rpi5DisplayVSyncAnchorReady',$null);
                 VSyncAnchorQpcLow=$key.GetValue('Rpi5DisplayVSyncAnchorQpcLow',$null);
                 VSyncAnchorQpcHigh=$key.GetValue('Rpi5DisplayVSyncAnchorQpcHigh',$null);
+                VSyncProvisionalPhaseReady=$key.GetValue('Rpi5DisplayVSyncProvisionalPhaseReady',$null);
+                VSyncProvisionalPhaseUsed=$key.GetValue('Rpi5DisplayVSyncProvisionalPhaseUsed',$null);
+                VSyncProvisionalSeedQpcLow=$key.GetValue('Rpi5DisplayVSyncProvisionalSeedQpcLow',$null);
+                VSyncProvisionalSeedQpcHigh=$key.GetValue('Rpi5DisplayVSyncProvisionalSeedQpcHigh',$null);
                 PixelValveIndex=$key.GetValue('Rpi5DisplayPixelValveIndex',$null);
                 PixelValvePhysLow=$key.GetValue('Rpi5DisplayPixelValvePhysLow',$null);
                 PixelValvePhysHigh=$key.GetValue('Rpi5DisplayPixelValvePhysHigh',$null);
                 VSyncInterruptsLow=$key.GetValue('Rpi5DisplayVSyncInterruptsLow',$null);
                 VSyncInterruptsHigh=$key.GetValue('Rpi5DisplayVSyncInterruptsHigh',$null);
                 ScanLineQueriesLow=$key.GetValue('Rpi5DisplayScanLineQueriesLow',$null);
-                ScanLineQueriesHigh=$key.GetValue('Rpi5DisplayScanLineQueriesHigh',$null)
+                ScanLineQueriesHigh=$key.GetValue('Rpi5DisplayScanLineQueriesHigh',$null);
+                VSyncProvisionalQueriesLow=$key.GetValue('Rpi5DisplayVSyncProvisionalQueriesLow',$null);
+                VSyncProvisionalQueriesHigh=$key.GetValue('Rpi5DisplayVSyncProvisionalQueriesHigh',$null);
+                VSyncControlRequestsLow=$key.GetValue('Rpi5DisplayVSyncControlRequestsLow',$null);
+                VSyncControlRequestsHigh=$key.GetValue('Rpi5DisplayVSyncControlRequestsHigh',$null);
+                VSyncControlEnableRequestsLow=$key.GetValue('Rpi5DisplayVSyncControlEnableRequestsLow',$null);
+                VSyncControlEnableRequestsHigh=$key.GetValue('Rpi5DisplayVSyncControlEnableRequestsHigh',$null);
+                VSyncControlDisableRequestsLow=$key.GetValue('Rpi5DisplayVSyncControlDisableRequestsLow',$null);
+                VSyncControlDisableRequestsHigh=$key.GetValue('Rpi5DisplayVSyncControlDisableRequestsHigh',$null);
+                VSyncControlFallbacksLow=$key.GetValue('Rpi5DisplayVSyncControlFallbacksLow',$null);
+                VSyncControlFallbacksHigh=$key.GetValue('Rpi5DisplayVSyncControlFallbacksHigh',$null);
+                VSyncLastControlType=$key.GetValue('Rpi5DisplayVSyncLastControlType',$null);
+                VSyncLastControlEnable=$key.GetValue('Rpi5DisplayVSyncLastControlEnable',$null);
+                VSyncLastControlSyncStatus=$key.GetValue('Rpi5DisplayVSyncLastControlSyncStatus',$null);
+                VSyncLastControlSyncReturn=$key.GetValue('Rpi5DisplayVSyncLastControlSyncReturn',$null);
+                VSyncLastControlFallback=$key.GetValue('Rpi5DisplayVSyncLastControlFallback',$null);
+                VSyncLastControlStatus=$key.GetValue('Rpi5DisplayVSyncLastControlStatus',$null);
+                VSyncLastControlPvInten=$key.GetValue('Rpi5DisplayVSyncLastControlPvInten',$null);
+                VSyncLastControlPvIntstat=$key.GetValue('Rpi5DisplayVSyncLastControlPvIntstat',$null);
+                VSyncPvIntenBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntenBeforeStop',$null);
+                VSyncPvIntstatBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntstatBeforeStop',$null)
             }
         } finally { $key.Dispose() }
     }

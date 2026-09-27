@@ -18,7 +18,7 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.11-hzfix-anchor"
+#define RP_DRIVER_VERSION "0.1.12-hzfix-vsync-delivery"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
@@ -45,10 +45,17 @@ typedef struct RP_ADAPTER {
     SIZE_T PixelValveBytes;
     volatile LONG VSyncInterruptEnabled;
     volatile LONG VSyncAnchorReported;
+    volatile LONG VSyncProvisionalReported;
+    volatile LONG VSyncPhaseSource;
     volatile LONG64 LastVSyncQpc;
     LONG64 QpcFrequency;
     volatile LONG64 VSyncCount;
     volatile LONG64 ScanLineQueries;
+    volatile LONG64 VSyncProvisionalScanLineQueries;
+    volatile LONG64 VSyncControlRequests;
+    volatile LONG64 VSyncControlEnableRequests;
+    volatile LONG64 VSyncControlDisableRequests;
+    volatile LONG64 VSyncControlDirectFallbacks;
     PVOID Framebuffer;
     SIZE_T FramebufferBytes;
     RP_SURFACE Shadow;
