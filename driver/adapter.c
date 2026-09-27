@@ -128,10 +128,6 @@ static BOOLEAN RpHardwareMatch(PDEVICE_OBJECT pdo)
 }
 static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
 {
-    static GUID handoffGuid = { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
-    UNICODE_STRING name = RTL_CONSTANT_STRING(L"Rpi5DisplayHandoff");
-    ULONG bytes = sizeof(a->FirmwareDisplay);
-    ULONG attributes = 0;
     NTSTATUS st;
     HANDLE key;
 
@@ -139,31 +135,43 @@ static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
     a->FirmwareTimingValid = FALSE;
     a->FirmwareEdidValid = FALSE;
     a->FirmwareVariableAttributes = 0;
+    a->FirmwareHandoffSource = RpHandoffNone;
 
-    st = ExGetFirmwareEnvironmentVariable(&name, &handoffGuid, &a->FirmwareDisplay, &bytes, &attributes);
-    if (NT_SUCCESS(st)) a->FirmwareVariableAttributes = attributes;
+    st = RpReadDisplayHandoff(
+        &a->FirmwareDisplay,
+        &a->FirmwareVariableAttributes,
+        &a->FirmwareHandoffSource,
+        a->Display.Width,
+        a->Display.Height);
+
     if (!NT_SUCCESS(st)) {
         RP_LOG("firmware display handoff unavailable status=0x%08lx; using unspecified timing fallback\n", st);
-    } else if (!rp_display_handoff_attributes_valid(attributes) ||
-               bytes != sizeof(a->FirmwareDisplay) ||
-               !rp_display_handoff_valid(&a->FirmwareDisplay, a->Display.Width, a->Display.Height)) {
-        RP_LOG("firmware display handoff rejected bytes=%lu signature=0x%08lx version=%u flags=0x%08lx attrs=0x%08lx\n",
-            bytes, a->FirmwareDisplay.signature, a->FirmwareDisplay.version,
-            a->FirmwareDisplay.flags, attributes);
         RtlZeroMemory(&a->FirmwareDisplay, sizeof(a->FirmwareDisplay));
     } else {
         a->FirmwareTimingValid = TRUE;
-        a->FirmwareEdidValid = (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
-        RP_LOG("firmware display handoff accepted display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
-            a->FirmwareDisplay.display_number, a->FirmwareDisplay.timing.clock_khz,
-            a->FirmwareDisplay.timing.htotal, a->FirmwareDisplay.timing.vtotal,
-            a->FirmwareDisplay.timing.vrefresh, a->FirmwareDisplay.edid_block_count, attributes);
+        a->FirmwareEdidValid =
+            (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
+        RP_LOG("firmware display handoff accepted source=%u display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
+            (UINT)a->FirmwareHandoffSource,
+            a->FirmwareDisplay.display_number,
+            a->FirmwareDisplay.timing.clock_khz,
+            a->FirmwareDisplay.timing.htotal,
+            a->FirmwareDisplay.timing.vtotal,
+            a->FirmwareDisplay.timing.vrefresh,
+            a->FirmwareDisplay.edid_block_count,
+            a->FirmwareVariableAttributes);
     }
 
-    if (NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareTimingValid", a->FirmwareTimingValid ? 1 : 0);
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidValid", a->FirmwareEdidValid ? 1 : 0);
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVariableAttributes", a->FirmwareVariableAttributes);
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareTimingValid",
+            a->FirmwareTimingValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidValid",
+            a->FirmwareEdidValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVariableAttributes",
+            a->FirmwareVariableAttributes);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareHandoffSource",
+            (ULONG)a->FirmwareHandoffSource);
         RpWriteStartDword(key, L"Rpi5DisplayFirmwareClockKHz",
             a->FirmwareTimingValid ? a->FirmwareDisplay.timing.clock_khz : 0);
         RpWriteStartDword(key, L"Rpi5DisplayFirmwareHTotal",
@@ -190,9 +198,16 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     #undef RP_BIND_CALLBACK
 
     /*
+     * Initialize the read-only ACPI firmware-table helper before deciding
+     * whether the optional VSync callback pair can be advertised.
+     */
+    status = RpHandoffInitialize();
+    RP_LOG("handoff transport initialization status=0x%08lx\n", status);
+
+    /*
      * Windows requires GetScanLine + ControlInterrupt as a pair when a KMDOD
-     * reports real signal frequencies. Bind the pair only if the exp0.7
-     * runtime handoff is already present and valid at DriverEntry.
+     * reports real signal frequencies. Bind the pair only when either the
+     * UEFI variable or the ACPI R5DH table provides a validated handoff.
      */
     gRpVSyncRegistrationEnabled = RpVSyncRegistrationAvailable();
     if (gRpVSyncRegistrationEnabled) {
