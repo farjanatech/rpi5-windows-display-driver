@@ -180,12 +180,15 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
      */
     InterlockedExchange64(&a->LastVSyncQpc, 0);
     InterlockedExchange(&a->VSyncInterruptEnabled, 0);
+    InterlockedExchange(&a->VSyncAnchorReported, 0);
     InterlockedExchange64(&a->VSyncCount, 0);
     InterlockedExchange64(&a->ScanLineQueries, 0);
     a->VSyncHardwareReady = TRUE;
 
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAdvertised", 1);
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncHardwareReady", 1);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled", 0);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValveIndex", a->PixelValveIndex);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysLow", (ULONG)expectedBase);
     RpWriteDeviceDword(a, L"Rpi5DisplayPixelValvePhysHigh",
@@ -268,10 +271,13 @@ VOID RpVSyncShutdown(RP_ADAPTER *a)
     }
 
     a->VSyncHardwareReady = FALSE;
+    InterlockedExchange(&a->VSyncAnchorReported, 0);
     MmUnmapIoSpace(a->PixelValveRegs, a->PixelValveBytes);
     a->PixelValveRegs = NULL;
     a->PixelValveBytes = 0;
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncHardwareReady", 0);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled", 0);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
 }
 
 NTSTATUS APIENTRY RpControlInterrupt(
@@ -311,6 +317,11 @@ NTSTATUS APIENTRY RpControlInterrupt(
     if (!NT_SUCCESS(status)) return status;
     if (!synchronized) return STATUS_UNSUCCESSFUL;
 
+    InterlockedExchange(&a->VSyncAnchorReported, 0);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptEnabled",
+                       enableInterrupt ? 1u : 0u);
+    RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 0);
+
     RP_LOG("ControlInterrupt CRTC_VSYNC enable=%u pv=%lu\n",
            enableInterrupt, a->PixelValveIndex);
     return STATUS_SUCCESS;
@@ -343,6 +354,21 @@ NTSTATUS APIENTRY RpGetScanLine(
          * phase from which to report a scan line.
          */
         return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (InterlockedCompareExchange(&a->VSyncAnchorReported, 1, 0) == 0) {
+        ULONGLONG anchor = (ULONGLONG)last;
+        ULONGLONG count = (ULONGLONG)InterlockedCompareExchange64(
+            &a->VSyncCount, 0, 0);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorReady", 1);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorQpcLow", (ULONG)anchor);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAnchorQpcHigh",
+                           (ULONG)(anchor >> 32));
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptsLow", (ULONG)count);
+        RpWriteDeviceDword(a, L"Rpi5DisplayVSyncInterruptsHigh",
+                           (ULONG)(count >> 32));
+        RP_LOG("VSync: first Windows-enabled hardware anchor observed pv=%lu qpc=%lld interrupts=%lld\n",
+               a->PixelValveIndex, last, (LONG64)count);
     }
 
     now = KeQueryPerformanceCounter(NULL);
