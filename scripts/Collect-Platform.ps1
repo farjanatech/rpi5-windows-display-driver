@@ -154,6 +154,10 @@ foreach ($device in $devices) {
                 FirmwareEdidBlocks=$key.GetValue('Rpi5DisplayFirmwareEdidBlocks',$null);
                 VSyncAdvertised=$key.GetValue('Rpi5DisplayVSyncAdvertised',$null);
                 VSyncHardwareReady=$key.GetValue('Rpi5DisplayVSyncHardwareReady',$null);
+                VSyncInterruptEnabled=$key.GetValue('Rpi5DisplayVSyncInterruptEnabled',$null);
+                VSyncAnchorReady=$key.GetValue('Rpi5DisplayVSyncAnchorReady',$null);
+                VSyncAnchorQpcLow=$key.GetValue('Rpi5DisplayVSyncAnchorQpcLow',$null);
+                VSyncAnchorQpcHigh=$key.GetValue('Rpi5DisplayVSyncAnchorQpcHigh',$null);
                 PixelValveIndex=$key.GetValue('Rpi5DisplayPixelValveIndex',$null);
                 PixelValvePhysLow=$key.GetValue('Rpi5DisplayPixelValvePhysLow',$null);
                 PixelValvePhysHigh=$key.GetValue('Rpi5DisplayPixelValvePhysHigh',$null);
