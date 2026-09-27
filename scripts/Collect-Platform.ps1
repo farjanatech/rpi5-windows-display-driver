@@ -71,6 +71,7 @@ foreach ($device in $devices) {
                 FirmwareTimingValid=$key.GetValue('Rpi5DisplayFirmwareTimingValid',$null);
                 FirmwareEdidValid=$key.GetValue('Rpi5DisplayFirmwareEdidValid',$null);
                 FirmwareVariableAttributes=$key.GetValue('Rpi5DisplayFirmwareVariableAttributes',$null);
+                FirmwareHandoffSource=$key.GetValue('Rpi5DisplayFirmwareHandoffSource',$null);
                 FirmwareClockKHz=$key.GetValue('Rpi5DisplayFirmwareClockKHz',$null);
                 FirmwareHTotal=$key.GetValue('Rpi5DisplayFirmwareHTotal',$null);
                 FirmwareVTotal=$key.GetValue('Rpi5DisplayFirmwareVTotal',$null);
