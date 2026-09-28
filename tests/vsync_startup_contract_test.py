@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.14 KMDOD VSync-control contract."""
+"""Static regression for the 0.1.15 KMDOD VSync-control contract."""
 
 from pathlib import Path
 
@@ -8,8 +8,8 @@ source = Path("driver/vsync.c").read_text(encoding="utf-8")
 header = Path("driver/display.h").read_text(encoding="utf-8")
 inf = Path("package/Rpi5Display.inf").read_text(encoding="utf-8")
 
-assert 'RP_DRIVER_VERSION "0.1.14-hzfix-present-performance"' in header
-assert "DriverVer=09/28/2026,0.1.14.0" in inf
+assert 'RP_DRIVER_VERSION "0.1.15-hzfix-idle-power"' in header
+assert "DriverVer=09/28/2026,0.1.15.0" in inf
 
 assert "RP_VSYNC_PHASE_PROVISIONAL" in source
 assert "RP_VSYNC_PHASE_HARDWARE" in source
@@ -70,4 +70,4 @@ shutdown_block = source[shutdown:control]
 assert 'L"Rpi5DisplayVSyncAnchorReady", 0' not in shutdown_block
 assert "Rpi5DisplayVSyncInterruptEnabledBeforeStop" in shutdown_block
 
-print("PASS: 0.1.14 preserves the working KMDOD DISPLAYONLY_VSYNC contract")
+print("PASS: 0.1.15 preserves the working KMDOD DISPLAYONLY_VSYNC contract")
