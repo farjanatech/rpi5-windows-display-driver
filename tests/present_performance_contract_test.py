@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.14 desktop-latency hot paths."""
+"""Static regression for the 0.1.15 desktop-latency hot paths."""
 
 from pathlib import Path
 
