@@ -375,7 +375,12 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     a->Shadow.pitch = a->Display.Pitch; a->Shadow.size = bytes;
     a->Visible = TRUE; a->NeedFull = TRUE;
     a->AdapterPower = a->MonitorPower = PowerDeviceD0;
-    a->Presents = 0; a->CrashDisplay = 0;
+    a->Presents = 0;
+    a->PresentMaxUs = 0;
+    a->PresentOver16ms = 0;
+    a->PresentOver33ms = 0;
+    a->PresentOver50ms = 0;
+    a->CrashDisplay = 0;
     if (a->RundownClosed) { ExReInitializeRundownProtection(&a->Rundown); a->RundownClosed = FALSE; }
     InterlockedExchange(&a->Active, 1);
     *sources = *children = 1;
@@ -397,7 +402,9 @@ NTSTATUS NTAPI RpStop(PVOID context)
     if (a->Framebuffer) { MmUnmapIoSpace(a->Framebuffer, a->FramebufferBytes); a->Framebuffer = NULL; }
     if (a->Shadow.data) { ExFreePoolWithTag(a->Shadow.data, RP_POOL_TAG); a->Shadow.data = NULL; }
     a->FramebufferBytes = 0;
-    RP_LOG("stopped after %llu presentations\n", a->Presents);
+    RP_LOG("stopped after %llu presentations maxPresentUs=%llu over16ms=%llu over33ms=%llu over50ms=%llu\n",
+        a->Presents, a->PresentMaxUs, a->PresentOver16ms,
+        a->PresentOver33ms, a->PresentOver50ms);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpRemove(PVOID context)

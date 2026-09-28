@@ -3,22 +3,43 @@
 VOID RpFlush(RP_ADAPTER *a, RP_RECT rect)
 {
     LONG y;
+    SIZE_T rowBytes;
+
     if (!a->Framebuffer || !a->Shadow.data || !a->Visible ||
-        a->AdapterPower != PowerDeviceD0 || a->MonitorPower != PowerDeviceD0 || a->CrashDisplay) return;
-    for (y = rect.top; y < rect.bottom; ++y) {
-        SIZE_T offset = (SIZE_T)y * a->Display.Pitch + (SIZE_T)rect.left * 4;
-        WRITE_REGISTER_BUFFER_ULONG((PULONG)((PUCHAR)a->Framebuffer + offset),
-            (PULONG)(a->Shadow.data + offset), (ULONG)(rect.right - rect.left));
+        a->AdapterPower != PowerDeviceD0 || a->MonitorPower != PowerDeviceD0 ||
+        a->CrashDisplay) {
+        return;
     }
+
+    /*
+     * The POST framebuffer is mapped write-combined. Treat it as framebuffer
+     * memory, not as a bank of device registers. WRITE_REGISTER_BUFFER_ULONG
+     * carries register-access ordering semantics; using it once per scan line
+     * made 1080p presents take tens of milliseconds. Microsoft's KMDOD sample
+     * uses ordinary memory copies for the same write-combined framebuffer path.
+     */
+    rowBytes = (SIZE_T)(rect.right - rect.left) * 4u;
+    for (y = rect.top; y < rect.bottom; ++y) {
+        SIZE_T offset =
+            (SIZE_T)y * a->Display.Pitch + (SIZE_T)rect.left * 4u;
+        RtlCopyMemory((PUCHAR)a->Framebuffer + offset,
+                      a->Shadow.data + offset,
+                      rowBytes);
+    }
+
+    /* Publish the completed framebuffer writes once per rectangle, not per row. */
     KeMemoryBarrier();
 }
 VOID RpBlank(RP_ADAPTER *a)
 {
-    ULONG x, y;
+    ULONG y;
+    SIZE_T rowBytes;
+
     if (!a->Framebuffer || a->CrashDisplay) return;
+    rowBytes = (SIZE_T)a->Display.Width * 4u;
     for (y = 0; y < a->Display.Height; ++y) {
-        volatile ULONG *row = (volatile ULONG *)((PUCHAR)a->Framebuffer + (SIZE_T)y * a->Display.Pitch);
-        for (x = 0; x < a->Display.Width; ++x) row[x] = 0;
+        RtlZeroMemory((PUCHAR)a->Framebuffer + (SIZE_T)y * a->Display.Pitch,
+                      rowBytes);
     }
     KeMemoryBarrier();
 }
@@ -34,6 +55,7 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
     ULONG i;
     NTSTATUS result = STATUS_SUCCESS;
     ULONGLONG begin = KeQueryInterruptTime();
+    ULONGLONG elapsedUs = 0;
     if (!p || p->VidPnSourceId != 0 || p->BytesPerPixel != 4 || p->Pitch <= 0 ||
         p->Flags.Rotate || p->NumMoves > RP_MAX_RECTS || p->NumDirtyRects > RP_MAX_RECTS ||
         (p->NumMoves && !p->pMoves) || (p->NumDirtyRects && !p->pDirtyRect) || !p->pSource) {
@@ -64,10 +86,16 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
             for (i = 0; i < p->NumDirtyRects; ++i) RpFlush(a, RpRect(p->pDirtyRect[i]));
         }
         ++a->Presents;
+        elapsedUs = (KeQueryInterruptTime() - begin) / 10;
+        if (elapsedUs > a->PresentMaxUs) a->PresentMaxUs = elapsedUs;
+        if (elapsedUs > 16667u) ++a->PresentOver16ms;
+        if (elapsedUs > 33333u) ++a->PresentOver33ms;
+        if (elapsedUs > 50000u) ++a->PresentOver50ms;
         if (a->Presents <= 8 || (a->Presents & 255) == 0)
-            RP_LOG("Present count=%llu moves=%lu dirty=%lu elapsedUs=%llu visible=%u\n",
+            RP_LOG("Present count=%llu moves=%lu dirty=%lu elapsedUs=%llu maxUs=%llu over16ms=%llu over33ms=%llu over50ms=%llu visible=%u\n",
                 a->Presents, p->NumMoves, p->NumDirtyRects,
-                (KeQueryInterruptTime() - begin) / 10, a->Visible);
+                elapsedUs, a->PresentMaxUs, a->PresentOver16ms,
+                a->PresentOver33ms, a->PresentOver50ms, a->Visible);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         a->NeedFull = TRUE; result = GetExceptionCode();
     }

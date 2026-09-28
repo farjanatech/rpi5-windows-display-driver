@@ -20,6 +20,7 @@
 #define RP_VSYNC_PHASE_NONE            0L
 #define RP_VSYNC_PHASE_PROVISIONAL     1L
 #define RP_VSYNC_PHASE_HARDWARE        2L
+#define RP_VSYNC_CONTROL_PERSIST_MASK   63ULL
 
 static volatile ULONG *RpPvRegister(RP_ADAPTER *a, ULONG offset)
 {
@@ -103,6 +104,42 @@ static VOID RpRecordVSyncCounters(RP_ADAPTER *a)
     }
 }
 
+static BOOLEAN RpShouldPersistControlResult(
+    RP_ADAPTER *a,
+    BOOLEAN enableInterrupt,
+    BOOLEAN usedDirectFallback,
+    NTSTATUS finalStatus)
+{
+    ULONGLONG requests;
+
+    if (!a) return FALSE;
+
+    /*
+     * 0.1.13 persisted roughly thirty registry DWORDs on every VSync
+     * enable/disable transition. Windows toggles VSync control routinely, so
+     * that diagnostic path became ongoing registry I/O during normal desktop
+     * use. Preserve the first enable/disable evidence, every failure/fallback,
+     * and a periodic snapshot instead.
+     */
+    if (!NT_SUCCESS(finalStatus) || usedDirectFallback) return TRUE;
+
+    if (enableInterrupt) {
+        if (InterlockedCompareExchange(
+                &a->VSyncEnableEvidencePersisted, 1, 0) == 0) {
+            return TRUE;
+        }
+    } else {
+        if (InterlockedCompareExchange(
+                &a->VSyncDisableEvidencePersisted, 1, 0) == 0) {
+            return TRUE;
+        }
+    }
+
+    requests = (ULONGLONG)InterlockedCompareExchange64(
+        &a->VSyncControlRequests, 0, 0);
+    return (requests & RP_VSYNC_CONTROL_PERSIST_MASK) == 0;
+}
+
 static VOID RpRecordControlInterruptResult(
     RP_ADAPTER *a,
     DXGK_INTERRUPT_TYPE interruptType,
@@ -115,7 +152,11 @@ static VOID RpRecordControlInterruptResult(
     ULONG inten = 0;
     ULONG intstat = 0;
 
-    if (!a) return;
+    if (!a || !RpShouldPersistControlResult(
+            a, enableInterrupt, usedDirectFallback, finalStatus)) {
+        return;
+    }
+
     RpRecordVSyncCounters(a);
     if (a->PixelValveRegs) {
         inten = READ_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTEN));
@@ -140,11 +181,6 @@ static VOID RpRecordControlInterruptResult(
                        (ULONG)InterlockedCompareExchange(
                            &a->VSyncInterruptEnabled, 0, 0));
 
-    /*
-     * Keep the enable and disable records independently. 0.1.12 only kept
-     * "last control", so Windows' watchdog-driven disable overwrote the exact
-     * enable request that caused the failure.
-     */
     if (enableInterrupt) {
         RpWriteDeviceDword(a, L"Rpi5DisplayVSyncLastEnableType",
                            (ULONG)interruptType);
@@ -317,6 +353,8 @@ NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources)
     InterlockedExchange64(&a->VSyncControlEnableRequests, 0);
     InterlockedExchange64(&a->VSyncControlDisableRequests, 0);
     InterlockedExchange64(&a->VSyncControlDirectFallbacks, 0);
+    InterlockedExchange(&a->VSyncEnableEvidencePersisted, 0);
+    InterlockedExchange(&a->VSyncDisableEvidencePersisted, 0);
     a->VSyncHardwareReady = TRUE;
 
     RpWriteDeviceDword(a, L"Rpi5DisplayVSyncAdvertised", 1);
