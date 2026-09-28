@@ -27,9 +27,14 @@ assert "RtlZeroMemory" in blank
 assert "volatile ULONG" not in blank
 assert blank.count("KeMemoryBarrier();") == 1
 
-# Keep explicit timing evidence for the next hardware run.
-assert "PresentMaxUs" in present\nassert "KeQueryPerformanceCounter" in present\nassert "KeQueryInterruptTime" not in present\nassert "PresentTotalPixels" in present\nassert "PresentMaxPixels" in present
+# Keep high-resolution timing and copy-area evidence for idle degradation.
+assert "PresentMaxUs" in present
+assert "KeQueryPerformanceCounter" in present
+assert "KeQueryInterruptTime" not in present
+assert "PresentTotalPixels" in present
+assert "PresentMaxPixels" in present
 assert "PresentOver16ms" in present
+assert "pixels=%llu" in present
 assert "maxPresentUs=" in adapter
 
 # Successful Windows VSync-control chatter must not write dozens of registry
@@ -37,8 +42,10 @@ assert "maxPresentUs=" in adapter
 # plus a periodic snapshot instead.
 assert "#define RP_VSYNC_CONTROL_PERSIST_MASK   63ULL" in vsync
 assert "static BOOLEAN RpShouldPersistControlResult" in vsync
-record = vsync[vsync.index("static VOID RpRecordControlInterruptResult"):
-               vsync.index("BOOLEAN RpVSyncRegistrationAvailable")]
+record = vsync[
+    vsync.index("static VOID RpRecordControlInterruptResult"):
+    vsync.index("BOOLEAN RpVSyncRegistrationAvailable")
+]
 gate = record.index("RpShouldPersistControlResult")
 counters = record.index("RpRecordVSyncCounters(a);")
 assert gate < counters
