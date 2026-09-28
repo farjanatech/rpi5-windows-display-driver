@@ -35,6 +35,17 @@
     X(DxgkDdiSystemDisplayEnable, RpSystemEnable) \
     X(DxgkDdiSystemDisplayWrite, RpSystemWrite)
 
+
+/*
+ * VSync control is optional for a KMDOD, but Windows requires these two
+ * callbacks to be supplied together with InterruptRoutine and DpcRoutine.
+ * DriverEntry binds this pair only when the exp0.7 firmware handoff is
+ * available early enough to support the hardware-backed path.
+ */
+#define RP_DOD_VSYNC_CALLBACK_BINDINGS(X) \
+    X(DxgkDdiGetScanLine, RpGetScanLine) \
+    X(DxgkDdiControlInterrupt, RpControlInterrupt)
+
 /* Initial entry requirements; this is not the whole Windows runtime contract. */
 #define RP_DOD_REQUIRED_ENTRY_CALLBACKS(X) \
     X(DxgkDdiAddDevice) \

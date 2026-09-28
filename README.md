@@ -2,13 +2,15 @@
 
 Experimental Windows-native ARM64 display-only miniport for Raspberry Pi 5 running Windows 11. The project contains driver source, test-signed CMD installer packages, runtime diagnostics and GitHub Actions validation.
 
-> **Current development candidate: 0.1.8. Known-good hardware baseline: 0.1.7.** The 0.1.7 framebuffer/display-only path has reached a working Windows desktop on the Raspberry Pi 5. Version 0.1.8 keeps that present path and adds validated firmware timing/EDID metadata; its physical timing/EDID result is the next hardware gate. Do not equate a green hosted build with a passed Pi test.
+> **Branch candidate: 0.1.9-hzfix on `sub-1st-hzfix`. Known-good desktop baseline: 0.1.7; 0.1.8 has also been reported by the tester to install and boot cleanly with UEFI exp0.7 but still shows an unknown refresh rate.** This branch preserves the existing framebuffer/PresentDisplayOnly path and adds the Windows-required hardware VSync control contract. It is not hardware-validated yet. Do not equate a green hosted build with a passed Pi test.
 
-## 0.1.8 timing/EDID handoff
+## 0.1.9-hzfix hardware VSync experiment
 
-The driver consumes a versioned volatile UEFI runtime handoff from the paired exp0.7 firmware candidate. It validates the firmware variable attributes, exact POST geometry, progressive timing, pixel clock/totals and complete EDID chain. Valid data is returned through `DxgkDdiQueryDeviceDescriptor` and used for VidPN signal timing; missing/invalid data falls back to the hardware-working 0.1.7 unspecified-timing behavior.
+The driver still consumes the versioned volatile `Rpi5DisplayHandoff` produced by UEFI exp0.7 and validates its exact POST geometry, timing and EDID. The Hz-fix branch additionally implements the KMDOD VSync-control contract required before reporting real `PixelRate`, `HSyncFreq` and `VSyncFreq`: `DxgkDdiControlInterrupt`, `DxgkDdiGetScanLine`, the existing ISR and DPC are supplied together only when a valid exp0.7 handoff is already available.
 
-No 60 Hz value is hard-coded. No HVS/V3D/HDMI register programming, hardware acceleration, new mode or interrupt-driven VSync path is added. The paired firmware work is tracked in `farjanatech/rpi5-uefi#9`; this driver candidate is PR #7.
+For HDMI0/HDMI1 the branch maps only the exact PixelValve MMIO resource assigned by Windows, verifies active scanout, uses the real PixelValve VFP-start interrupt as the VSync anchor, reports `DXGK_INTERRUPT_DISPLAYONLY_VSYNC` to dxgkrnl, and derives scan-line phase from that hardware anchor plus the validated firmware timing. It does not program display modes, HVS lists, HDMI, or V3D. If the exp0.7 handoff is absent at registration, the optional VSync pair is left unbound and the established unspecified-timing fallback is retained.
+
+No refresh rate is hard-coded. This branch still provides no V3D/Direct3D rendering acceleration and is not expected to create a Task Manager GPU-engine graph. Physical Pi validation is required before merging it to `main`.
 
 ## Build and use
 
@@ -27,12 +29,12 @@ Full instructions: [CMD installer and log collection](docs/CMD_INSTALLER.md), [l
 | Area | Current implementation / limitation |
 | --- | --- |
 | Device | Exact `ACPI\BCM2712` match; actual firmware resource ownership must be verified |
-| Display | One logical firmware-selected target, existing boot mode, 32-bit framebuffer; validated timing/EDID from exp0.7 when available |
+| Display | One logical firmware-selected target, existing boot mode, 32-bit framebuffer; validated timing/EDID from exp0.7; experimental PixelValve-backed VSync on `sub-1st-hzfix` |
 | Presentation | Synchronous checked shadow copies, overlapping moves, dirty updates, software cursor |
 | Lifecycle | Startup, stop/cleanup, visibility, software blanking, diagnostic-display callbacks |
 | Diagnostics | Kernel TraceLogging plus before/after Windows/device/setup/driver records and support ZIPs |
 | Safety controls | Explicit per-device LabEnable gate, bounds checks, no guessed physical addresses or arbitrary-memory IOCTL |
-| Not implemented | Native HVS/HDMI mode setting, hardware cursor, interrupt-driven VSync synchronization, multiple outputs, physical suspend/resume, V3D or Direct3D hardware acceleration |
+| Not implemented | Native HVS/HDMI mode setting, hardware cursor, multiple outputs, physical suspend/resume, V3D or Direct3D hardware acceleration; the branch VSync path observes existing firmware scanout only |
 
 ## Roadmap and evidence
 

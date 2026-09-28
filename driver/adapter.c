@@ -34,6 +34,8 @@ typedef enum RP_START_STAGE {
     RpStartCompleted = 8
 } RP_START_STAGE;
 
+static BOOLEAN gRpVSyncRegistrationEnabled = FALSE;
+
 static VOID RpWriteStartDword(HANDLE key, PCWSTR valueName, ULONG value)
 {
     UNICODE_STRING name;
@@ -63,6 +65,78 @@ static VOID RpRecordStartState(RP_ADAPTER *a, RP_START_STAGE stage, NTSTATUS sta
         RpWriteStartDword(key, L"Rpi5DisplayPostPhysLow", display->PhysicAddress.LowPart);
         RpWriteStartDword(key, L"Rpi5DisplayPostPhysHigh", (ULONG)display->PhysicAddress.HighPart);
     }
+    ZwClose(key);
+}
+
+static VOID RpResetPowerDiagnostics(RP_ADAPTER *a)
+{
+    HANDLE key;
+
+    if (!a) return;
+    InterlockedExchange64(&a->PowerRequests, 0);
+    InterlockedExchange64(&a->AdapterPowerTransitions, 0);
+    InterlockedExchange64(&a->MonitorPowerTransitions, 0);
+
+    if (!a->Pdo ||
+        !NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        return;
+    }
+
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerUid", MAXULONG);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerState", PowerDeviceUnspecified);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerAction", PowerActionNone);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerPreviousState", PowerDeviceUnspecified);
+    ZwClose(key);
+}
+
+static VOID RpRecordPowerState(
+    RP_ADAPTER *a,
+    ULONG uid,
+    DEVICE_POWER_STATE power,
+    POWER_ACTION action,
+    DEVICE_POWER_STATE previous)
+{
+    HANDLE key;
+    ULONGLONG requests;
+    ULONGLONG adapterTransitions;
+    ULONGLONG monitorTransitions;
+
+    if (!a || !a->Pdo ||
+        !NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        return;
+    }
+
+    requests = (ULONGLONG)InterlockedCompareExchange64(
+        &a->PowerRequests, 0, 0);
+    adapterTransitions = (ULONGLONG)InterlockedCompareExchange64(
+        &a->AdapterPowerTransitions, 0, 0);
+    monitorTransitions = (ULONGLONG)InterlockedCompareExchange64(
+        &a->MonitorPowerTransitions, 0, 0);
+
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsLow", (ULONG)requests);
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsHigh",
+                      (ULONG)(requests >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsLow",
+                      (ULONG)adapterTransitions);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsHigh",
+                      (ULONG)(adapterTransitions >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsLow",
+                      (ULONG)monitorTransitions);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsHigh",
+                      (ULONG)(monitorTransitions >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerUid", uid);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerState", (ULONG)power);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerAction", (ULONG)action);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerPreviousState",
+                      (ULONG)previous);
     ZwClose(key);
 }
 
@@ -126,10 +200,6 @@ static BOOLEAN RpHardwareMatch(PDEVICE_OBJECT pdo)
 }
 static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
 {
-    static GUID handoffGuid = { 0x941ce3d8, 0x8c4f, 0x4b9e, { 0xa5, 0x77, 0x1c, 0xc9, 0x82, 0x74, 0x55, 0x31 } };
-    UNICODE_STRING name = RTL_CONSTANT_STRING(L"Rpi5DisplayHandoff");
-    ULONG bytes = sizeof(a->FirmwareDisplay);
-    ULONG attributes = 0;
     NTSTATUS st;
     HANDLE key;
 
@@ -137,31 +207,43 @@ static VOID RpLoadFirmwareDisplay(RP_ADAPTER *a)
     a->FirmwareTimingValid = FALSE;
     a->FirmwareEdidValid = FALSE;
     a->FirmwareVariableAttributes = 0;
+    a->FirmwareHandoffSource = RpHandoffNone;
 
-    st = ExGetFirmwareEnvironmentVariable(&name, &handoffGuid, &a->FirmwareDisplay, &bytes, &attributes);
-    if (NT_SUCCESS(st)) a->FirmwareVariableAttributes = attributes;
+    st = RpReadDisplayHandoff(
+        &a->FirmwareDisplay,
+        &a->FirmwareVariableAttributes,
+        &a->FirmwareHandoffSource,
+        a->Display.Width,
+        a->Display.Height);
+
     if (!NT_SUCCESS(st)) {
         RP_LOG("firmware display handoff unavailable status=0x%08lx; using unspecified timing fallback\n", st);
-    } else if (!rp_display_handoff_attributes_valid(attributes) ||
-               bytes != sizeof(a->FirmwareDisplay) ||
-               !rp_display_handoff_valid(&a->FirmwareDisplay, a->Display.Width, a->Display.Height)) {
-        RP_LOG("firmware display handoff rejected bytes=%lu signature=0x%08lx version=%u flags=0x%08lx attrs=0x%08lx\n",
-            bytes, a->FirmwareDisplay.signature, a->FirmwareDisplay.version,
-            a->FirmwareDisplay.flags, attributes);
         RtlZeroMemory(&a->FirmwareDisplay, sizeof(a->FirmwareDisplay));
     } else {
         a->FirmwareTimingValid = TRUE;
-        a->FirmwareEdidValid = (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
-        RP_LOG("firmware display handoff accepted display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
-            a->FirmwareDisplay.display_number, a->FirmwareDisplay.timing.clock_khz,
-            a->FirmwareDisplay.timing.htotal, a->FirmwareDisplay.timing.vtotal,
-            a->FirmwareDisplay.timing.vrefresh, a->FirmwareDisplay.edid_block_count, attributes);
+        a->FirmwareEdidValid =
+            (a->FirmwareDisplay.flags & RP_DISPLAY_HANDOFF_EDID_VALID) != 0;
+        RP_LOG("firmware display handoff accepted source=%u display=%lu clockKHz=%lu total=%ux%u refreshHint=%u edidBlocks=%lu attrs=0x%08lx\n",
+            (UINT)a->FirmwareHandoffSource,
+            a->FirmwareDisplay.display_number,
+            a->FirmwareDisplay.timing.clock_khz,
+            a->FirmwareDisplay.timing.htotal,
+            a->FirmwareDisplay.timing.vtotal,
+            a->FirmwareDisplay.timing.vrefresh,
+            a->FirmwareDisplay.edid_block_count,
+            a->FirmwareVariableAttributes);
     }
 
-    if (NT_SUCCESS(IoOpenDeviceRegistryKey(a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareTimingValid", a->FirmwareTimingValid ? 1 : 0);
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidValid", a->FirmwareEdidValid ? 1 : 0);
-        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVariableAttributes", a->FirmwareVariableAttributes);
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareTimingValid",
+            a->FirmwareTimingValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareEdidValid",
+            a->FirmwareEdidValid ? 1 : 0);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareVariableAttributes",
+            a->FirmwareVariableAttributes);
+        RpWriteStartDword(key, L"Rpi5DisplayFirmwareHandoffSource",
+            (ULONG)a->FirmwareHandoffSource);
         RpWriteStartDword(key, L"Rpi5DisplayFirmwareClockKHz",
             a->FirmwareTimingValid ? a->FirmwareDisplay.timing.clock_khz : 0);
         RpWriteStartDword(key, L"Rpi5DisplayFirmwareHTotal",
@@ -186,8 +268,27 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     #define RP_BIND_CALLBACK(field, function) init.field = function;
     RP_DOD_CALLBACK_BINDINGS(RP_BIND_CALLBACK)
     #undef RP_BIND_CALLBACK
-    /* A required dispatch entry must exist even when every legacy IOCTL is unsupported.
-       Do not add interrupts, VSync claims, render DDIs or private memory interfaces. */
+
+    /*
+     * Initialize the read-only ACPI firmware-table helper before deciding
+     * whether the optional VSync callback pair can be advertised.
+     */
+    status = RpHandoffInitialize();
+    RP_LOG("handoff transport initialization status=0x%08lx\n", status);
+
+    /*
+     * Windows requires GetScanLine + ControlInterrupt as a pair when a KMDOD
+     * reports real signal frequencies. Bind the pair only when either the
+     * UEFI variable or the ACPI R5DH table provides a validated handoff.
+     */
+    gRpVSyncRegistrationEnabled = RpVSyncRegistrationAvailable();
+    if (gRpVSyncRegistrationEnabled) {
+        #define RP_BIND_VSYNC_CALLBACK(field, function) init.field = function;
+        RP_DOD_VSYNC_CALLBACK_BINDINGS(RP_BIND_VSYNC_CALLBACK)
+        #undef RP_BIND_VSYNC_CALLBACK
+    }
+
+    /* A required dispatch entry must exist even when every legacy IOCTL is unsupported. */
     #define RP_CHECK_CALLBACK(field) if (!init.field) { ++missing; RP_LOG("registration missing callback=%s\n", #field); }
     RP_DOD_REQUIRED_ENTRY_CALLBACKS(RP_CHECK_CALLBACK)
     #undef RP_CHECK_CALLBACK
@@ -204,7 +305,8 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
         (ULONG)sizeof(init), (ULONG)sizeof(PVOID),
         (ULONG)FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest),
         os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, status);
-    RP_LOG("registering experimental firmware-framebuffer KMDOD\n");
+    RP_LOG("registering experimental firmware-framebuffer KMDOD vsyncControl=%u\n",
+        gRpVSyncRegistrationEnabled);
     status = DxgkInitializeDisplayOnlyDriver(object, path, &init);
     RP_LOG("DriverEntry version=%s status=0x%08lx\n", RP_DRIVER_VERSION, status);
     if (!NT_SUCCESS(status)) RpTraceShutdown();
@@ -222,7 +324,9 @@ NTSTATUS NTAPI RpAdd(PDEVICE_OBJECT pdo, PVOID *context)
     }
     a = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*a), RP_POOL_TAG);
     if (!a) return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(a, sizeof(*a));
     a->Pdo = pdo;
+    a->VSyncAdvertised = gRpVSyncRegistrationEnabled;
     KeInitializeMutex(&a->Mutex, 0);
     ExInitializeRundownProtection(&a->Rundown);
     *context = a;
@@ -245,7 +349,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         RpRecordStartState(a, RpStartEntered, STATUS_DEVICE_CONFIGURATION_ERROR, NULL, 0);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    if (a->Active || a->Framebuffer) {
+    if (a->Active || a->Framebuffer || a->PixelValveRegs) {
         RpRecordStartState(a, RpStartEntered, STATUS_INVALID_DEVICE_STATE, NULL, 0);
         return STATUS_INVALID_DEVICE_STATE;
     }
@@ -291,9 +395,27 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
     RpRecordStartState(a, RpStartPostValidated, STATUS_SUCCESS, &a->Display, 0);
-    /* Timing/EDID is optional. A missing or invalid firmware handoff must not
-       regress the already hardware-validated 0.1.7 framebuffer path. */
+    /*
+     * Timing/EDID remains optional for the legacy fallback registration. If
+     * DriverEntry advertised VSync control, however, Windows requires real
+     * timing plus working GetScanLine/ControlInterrupt support.
+     */
     RpLoadFirmwareDisplay(a);
+    if (a->VSyncAdvertised) {
+        if (!a->FirmwareTimingValid) {
+            RP_LOG("VSync registration was advertised but firmware timing is unavailable\n");
+            RpRecordStartState(a, RpStartPostValidated,
+                               STATUS_DEVICE_CONFIGURATION_ERROR, &a->Display, 0);
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
+        st = RpVSyncInitialize(a, device.TranslatedResourceList);
+        if (!NT_SUCCESS(st)) {
+            RP_LOG("VSync hardware initialization failed 0x%08lx\n", st);
+            RpRecordStartState(a, RpStartPostValidated, st, &a->Display, 0);
+            return st;
+        }
+    }
+
     /* Map only the OS-owned POST framebuffer. Match Microsoft's KMDOD sample:
        prefer write-combining, then retry non-cached if the platform rejects WC. */
     a->Framebuffer = MmMapIoSpaceEx(a->Display.PhysicAddress, bytes, PAGE_READWRITE | PAGE_WRITECOMBINE);
@@ -306,6 +428,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     }
     if (!a->Framebuffer) {
         RP_LOG("Framebuffer mapping failed in both cache modes bytes=%llu\n", (ULONGLONG)bytes);
+        RpVSyncShutdown(a);
         RpRecordStartState(a, RpStartPostValidated, STATUS_NO_MEMORY, &a->Display, 0);
         return STATUS_NO_MEMORY;
     }
@@ -315,6 +438,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     if (!a->Shadow.data) {
         RP_LOG("Shadow allocation failed bytes=%llu\n", (ULONGLONG)bytes);
         MmUnmapIoSpace(a->Framebuffer, bytes); a->Framebuffer = NULL; a->FramebufferBytes = 0;
+        RpVSyncShutdown(a);
         RpRecordStartState(a, RpStartFramebufferMapped, STATUS_INSUFFICIENT_RESOURCES, &a->Display, mapMode);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -323,13 +447,22 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     a->Shadow.pitch = a->Display.Pitch; a->Shadow.size = bytes;
     a->Visible = TRUE; a->NeedFull = TRUE;
     a->AdapterPower = a->MonitorPower = PowerDeviceD0;
-    a->Presents = 0; a->CrashDisplay = 0;
+    RpResetPowerDiagnostics(a);
+    a->Presents = 0;
+    a->PresentMaxUs = 0;
+    a->PresentOver16ms = 0;
+    a->PresentOver33ms = 0;
+    a->PresentOver50ms = 0;
+    a->PresentTotalPixels = 0;
+    a->PresentMaxPixels = 0;
+    a->CrashDisplay = 0;
     if (a->RundownClosed) { ExReInitializeRundownProtection(&a->Rundown); a->RundownClosed = FALSE; }
     InterlockedExchange(&a->Active, 1);
     *sources = *children = 1;
     RpRecordStartState(a, RpStartCompleted, STATUS_SUCCESS, &a->Display, mapMode);
-    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu; no native hardware programming\n",
-        a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode);
+    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu vsync=%u pv=%lu; no mode programming\n",
+        a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode,
+        a->VSyncHardwareReady, a->PixelValveIndex);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpStop(PVOID context)
@@ -337,13 +470,17 @@ NTSTATUS NTAPI RpStop(PVOID context)
     RP_ADAPTER *a = context;
     if (!a) return STATUS_INVALID_PARAMETER;
     InterlockedExchange(&a->Active, 0);
+    RpVSyncShutdown(a);
     if (!a->RundownClosed) {
         ExWaitForRundownProtectionRelease(&a->Rundown); a->RundownClosed = TRUE;
     }
     if (a->Framebuffer) { MmUnmapIoSpace(a->Framebuffer, a->FramebufferBytes); a->Framebuffer = NULL; }
     if (a->Shadow.data) { ExFreePoolWithTag(a->Shadow.data, RP_POOL_TAG); a->Shadow.data = NULL; }
     a->FramebufferBytes = 0;
-    RP_LOG("stopped after %llu presentations\n", a->Presents);
+    RP_LOG("stopped after %llu presentations maxPresentUs=%llu maxPixels=%llu totalPixels=%llu over16ms=%llu over33ms=%llu over50ms=%llu\n",
+        a->Presents, a->PresentMaxUs, a->PresentMaxPixels,
+        a->PresentTotalPixels, a->PresentOver16ms,
+        a->PresentOver33ms, a->PresentOver50ms);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpRemove(PVOID context)
@@ -370,17 +507,7 @@ NTSTATUS NTAPI RpReleasePost(PVOID context, D3DDDI_VIDEO_PRESENT_TARGET_ID targe
     RpLeave(a);
     return RpStop(a);
 }
-/* Microsoft KMDOD registers these callbacks even though the sample has no
-   hardware cursor and does not handle display interrupts. Keep the same safe
-   semantics so the display-only callback table is complete without claiming
-   unsupported hardware features. */
-BOOLEAN NTAPI RpInterrupt(PVOID context, ULONG messageNumber)
-{
-    UNREFERENCED_PARAMETER(context);
-    UNREFERENCED_PARAMETER(messageNumber);
-    return FALSE;
-}
-
+/* The hardware-backed ISR is implemented in vsync.c. */
 VOID NTAPI RpDpc(PVOID context)
 {
     RP_ADAPTER *a = context;
@@ -504,20 +631,62 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
 {
     RP_ADAPTER *a = context;
-    RP_RECT full;
-    RP_LOG("Power uid=%lu state=%u action=%u\n", uid, (UINT)power, (UINT)action);
-    if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) return STATUS_INVALID_PARAMETER;
-    if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) return STATUS_INVALID_PARAMETER;
-    /* Physical adapter suspend is not implemented. Do not report it as working.
-       The lab runbook requires sleep/hibernation disabled before opting in. */
-    if (uid == DISPLAY_ADAPTER_HW_ID && power != PowerDeviceD0 &&
-        action != PowerActionShutdown && action != PowerActionShutdownReset && action != PowerActionShutdownOff)
-        return STATUS_NOT_SUPPORTED;
-    if (!RpEnter(a)) return STATUS_SUCCESS;
-    if (uid == DISPLAY_ADAPTER_HW_ID) a->AdapterPower = power; else a->MonitorPower = power;
-    full.left = full.top = 0; full.right = (LONG)a->Display.Width; full.bottom = (LONG)a->Display.Height;
-    if (power == PowerDeviceD0) RpFlush(a, full); else RpBlank(a);
-    RpLeave(a); return STATUS_SUCCESS;
+    DEVICE_POWER_STATE previous;
+
+    PAGED_CODE();
+
+    if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    InterlockedIncrement64(&a->PowerRequests);
+    if (uid == DISPLAY_ADAPTER_HW_ID) {
+        InterlockedIncrement64(&a->AdapterPowerTransitions);
+    } else {
+        InterlockedIncrement64(&a->MonitorPowerTransitions);
+    }
+
+    /*
+     * DxgkDdiSetPowerState is a notification/transition contract and should
+     * not reject a valid D-state request. This firmware-framebuffer KMDOD does
+     * not physically gate BCM2712 display power yet; mirror Microsoft's KMDOD
+     * sample by tracking the requested state and returning success.
+     *
+     * Do not synchronously blank or repaint the 8 MiB framebuffer from this
+     * callback. On a D0 return, mark the next PresentDisplayOnly as a full
+     * repair instead. This keeps idle power transitions out of the display
+     * hot path and avoids stale framebuffer content after a low-power period.
+     */
+    if (!RpEnter(a)) {
+        previous = (uid == DISPLAY_ADAPTER_HW_ID) ?
+            a->AdapterPower : a->MonitorPower;
+        RpRecordPowerState(a, uid, power, action, previous);
+        RP_LOG("Power ignored while inactive uid=%lu previous=%u state=%u action=%u\n",
+               uid, (UINT)previous, (UINT)power, (UINT)action);
+        return STATUS_SUCCESS;
+    }
+
+    if (uid == DISPLAY_ADAPTER_HW_ID) {
+        previous = a->AdapterPower;
+        a->AdapterPower = power;
+    } else {
+        previous = a->MonitorPower;
+        a->MonitorPower = power;
+    }
+
+    if (power == PowerDeviceD0 && previous != PowerDeviceD0) {
+        a->NeedFull = TRUE;
+    }
+
+    RP_LOG("Power uid=%lu previous=%u state=%u action=%u needFull=%u\n",
+           uid, (UINT)previous, (UINT)power, (UINT)action, a->NeedFull);
+    RpLeave(a);
+
+    RpRecordPowerState(a, uid, power, action, previous);
+    return STATUS_SUCCESS;
 }
 VOID NTAPI RpReset(PVOID context) { UNREFERENCED_PARAMETER(context); }
 VOID NTAPI RpUnload(VOID) { RP_LOG("Unload\n"); RpTraceShutdown(); }

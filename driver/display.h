@@ -9,6 +9,8 @@
 #pragma warning(pop)
 #include "../core/framebuffer.h"
 #include "../core/display_handoff.h"
+#include "../core/acpi_handoff.h"
+#include "../core/vsync_timing.h"
 #include "../core/registration_contract.h"
 /* Pin the existing, accepted KMDOD ABI; the fix is not a WDDM upgrade. */
 C_ASSERT(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8);
@@ -16,11 +18,17 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.8"
+#define RP_DRIVER_VERSION "0.1.15-hzfix-idle-power"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
 #define RP_LOG(...) RpLog(__VA_ARGS__)
+typedef enum RP_HANDOFF_SOURCE {
+    RpHandoffNone = 0,
+    RpHandoffUefiVariable = 1,
+    RpHandoffAcpiR5dh = 2
+} RP_HANDOFF_SOURCE;
+
 typedef struct RP_ADAPTER {
     PDEVICE_OBJECT Pdo;
     DXGKRNL_INTERFACE Dxgk;
@@ -29,6 +37,27 @@ typedef struct RP_ADAPTER {
     BOOLEAN FirmwareTimingValid;
     BOOLEAN FirmwareEdidValid;
     ULONG FirmwareVariableAttributes;
+    RP_HANDOFF_SOURCE FirmwareHandoffSource;
+    BOOLEAN VSyncAdvertised;
+    BOOLEAN VSyncHardwareReady;
+    ULONG PixelValveIndex;
+    PVOID PixelValveRegs;
+    SIZE_T PixelValveBytes;
+    volatile LONG VSyncInterruptEnabled;
+    volatile LONG VSyncAnchorReported;
+    volatile LONG VSyncProvisionalReported;
+    volatile LONG VSyncPhaseSource;
+    volatile LONG64 LastVSyncQpc;
+    LONG64 QpcFrequency;
+    volatile LONG64 VSyncCount;
+    volatile LONG64 ScanLineQueries;
+    volatile LONG64 VSyncProvisionalScanLineQueries;
+    volatile LONG64 VSyncControlRequests;
+    volatile LONG64 VSyncControlEnableRequests;
+    volatile LONG64 VSyncControlDisableRequests;
+    volatile LONG64 VSyncControlDirectFallbacks;
+    volatile LONG VSyncEnableEvidencePersisted;
+    volatile LONG VSyncDisableEvidencePersisted;
     PVOID Framebuffer;
     SIZE_T FramebufferBytes;
     RP_SURFACE Shadow;
@@ -39,12 +68,33 @@ typedef struct RP_ADAPTER {
     volatile LONG CrashDisplay;
     BOOLEAN Visible, NeedFull;
     DEVICE_POWER_STATE AdapterPower, MonitorPower;
+    volatile LONG64 PowerRequests;
+    volatile LONG64 AdapterPowerTransitions;
+    volatile LONG64 MonitorPowerTransitions;
     ULONG64 Presents;
+    ULONG64 PresentMaxUs;
+    ULONG64 PresentOver16ms;
+    ULONG64 PresentOver33ms;
+    ULONG64 PresentOver50ms;
+    ULONG64 PresentTotalPixels;
+    ULONG64 PresentMaxPixels;
 } RP_ADAPTER;
 BOOLEAN RpEnter(RP_ADAPTER *a);
 VOID RpLeave(RP_ADAPTER *a);
 VOID RpFlush(RP_ADAPTER *a, RP_RECT rect);
 VOID RpBlank(RP_ADAPTER *a);
+NTSTATUS RpHandoffInitialize(VOID);
+NTSTATUS RpReadDisplayHandoff(
+    RP_DISPLAY_HANDOFF *handoff,
+    PULONG variableAttributes,
+    RP_HANDOFF_SOURCE *source,
+    ULONG width,
+    ULONG height);
+BOOLEAN RpVSyncRegistrationAvailable(VOID);
+NTSTATUS RpVSyncInitialize(RP_ADAPTER *a, PCM_RESOURCE_LIST resources);
+VOID RpVSyncShutdown(RP_ADAPTER *a);
+DXGKDDI_CONTROLINTERRUPT RpControlInterrupt;
+DXGKDDI_GETSCANLINE RpGetScanLine;
 BOOLEAN RpPathValid(const D3DKMDT_VIDPN_PRESENT_PATH *path, BOOLEAN pinned);
 DXGKDDI_ISSUPPORTEDVIDPN RpIsSupported;
 DXGKDDI_ENUMVIDPNCOFUNCMODALITY RpEnumModes;
