@@ -28,7 +28,7 @@ assert "volatile ULONG" not in blank
 assert blank.count("KeMemoryBarrier();") == 1
 
 # Keep explicit timing evidence for the next hardware run.
-assert "PresentMaxUs" in present
+assert "PresentMaxUs" in present\nassert "KeQueryPerformanceCounter" in present\nassert "KeQueryInterruptTime" not in present\nassert "PresentTotalPixels" in present\nassert "PresentMaxPixels" in present
 assert "PresentOver16ms" in present
 assert "maxPresentUs=" in adapter
 
@@ -50,4 +50,4 @@ assert "DxgkCbNotifyInterrupt" in isr
 assert "DxgkCbQueueDpc" in isr
 assert "DxgkCbNotifyDpc" in adapter
 
-print("PASS: 0.1.14 removes framebuffer/register hot-path abuse and rate-limits diagnostic registry writes")
+print("PASS: framebuffer hot path is memory-copy based and Present profiling uses high-resolution QPC timing")

@@ -76,6 +76,8 @@ typedef struct RP_ADAPTER {
     ULONG64 PresentOver16ms;
     ULONG64 PresentOver33ms;
     ULONG64 PresentOver50ms;
+    ULONG64 PresentTotalPixels;
+    ULONG64 PresentMaxPixels;
 } RP_ADAPTER;
 BOOLEAN RpEnter(RP_ADAPTER *a);
 VOID RpLeave(RP_ADAPTER *a);

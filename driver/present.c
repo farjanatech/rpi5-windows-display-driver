@@ -54,8 +54,10 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
     RP_RECT full;
     ULONG i;
     NTSTATUS result = STATUS_SUCCESS;
-    ULONGLONG begin = KeQueryInterruptTime();
+    LARGE_INTEGER begin = KeQueryPerformanceCounter(NULL);
+    LARGE_INTEGER end;
     ULONGLONG elapsedUs = 0;
+    ULONGLONG workPixels = 0;
     if (!p || p->VidPnSourceId != 0 || p->BytesPerPixel != 4 || p->Pitch <= 0 ||
         p->Flags.Rotate || p->NumMoves > RP_MAX_RECTS || p->NumDirtyRects > RP_MAX_RECTS ||
         (p->NumMoves && !p->pMoves) || (p->NumDirtyRects && !p->pDirtyRect) || !p->pSource) {
@@ -76,26 +78,44 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
             if (!rp_rect_valid(src.width, src.height, RpRect(p->pDirtyRect[i]))) { result = STATUS_INVALID_PARAMETER; __leave; }
         }
         if (a->NeedFull) {
+            workPixels = (ULONGLONG)src.width * (ULONGLONG)src.height;
             rp_copy(&a->Shadow, &src, full); a->NeedFull = FALSE; RpFlush(a, full);
         } else {
             /* Complete all moves before any dirty-rectangle copy, per the Windows DDI. */
-            for (i = 0; i < p->NumMoves; ++i)
-                rp_move(&a->Shadow, RpRect(p->pMoves[i].DestRect), p->pMoves[i].SourcePoint.x, p->pMoves[i].SourcePoint.y);
-            for (i = 0; i < p->NumDirtyRects; ++i) rp_copy(&a->Shadow, &src, RpRect(p->pDirtyRect[i]));
+            for (i = 0; i < p->NumMoves; ++i) {
+                RP_RECT rect = RpRect(p->pMoves[i].DestRect);
+                workPixels += (ULONGLONG)(rect.right - rect.left) *
+                              (ULONGLONG)(rect.bottom - rect.top);
+                rp_move(&a->Shadow, rect,
+                        p->pMoves[i].SourcePoint.x, p->pMoves[i].SourcePoint.y);
+            }
+            for (i = 0; i < p->NumDirtyRects; ++i) {
+                RP_RECT rect = RpRect(p->pDirtyRect[i]);
+                workPixels += (ULONGLONG)(rect.right - rect.left) *
+                              (ULONGLONG)(rect.bottom - rect.top);
+                rp_copy(&a->Shadow, &src, rect);
+            }
             for (i = 0; i < p->NumMoves; ++i) RpFlush(a, RpRect(p->pMoves[i].DestRect));
             for (i = 0; i < p->NumDirtyRects; ++i) RpFlush(a, RpRect(p->pDirtyRect[i]));
         }
         ++a->Presents;
-        elapsedUs = (KeQueryInterruptTime() - begin) / 10;
+        end = KeQueryPerformanceCounter(NULL);
+        if (a->QpcFrequency > 0 && end.QuadPart >= begin.QuadPart) {
+            ULONGLONG delta = (ULONGLONG)(end.QuadPart - begin.QuadPart);
+            elapsedUs = (delta * 1000000ULL) / (ULONGLONG)a->QpcFrequency;
+        }
         if (elapsedUs > a->PresentMaxUs) a->PresentMaxUs = elapsedUs;
         if (elapsedUs > 16667u) ++a->PresentOver16ms;
         if (elapsedUs > 33333u) ++a->PresentOver33ms;
         if (elapsedUs > 50000u) ++a->PresentOver50ms;
-        if (a->Presents <= 8 || (a->Presents & 255) == 0)
-            RP_LOG("Present count=%llu moves=%lu dirty=%lu elapsedUs=%llu maxUs=%llu over16ms=%llu over33ms=%llu over50ms=%llu visible=%u\n",
-                a->Presents, p->NumMoves, p->NumDirtyRects,
-                elapsedUs, a->PresentMaxUs, a->PresentOver16ms,
-                a->PresentOver33ms, a->PresentOver50ms, a->Visible);
+        a->PresentTotalPixels += workPixels;
+        if (workPixels > a->PresentMaxPixels) a->PresentMaxPixels = workPixels;
+        if (a->Presents <= 8 || (a->Presents & 63) == 0)
+            RP_LOG("Present count=%llu moves=%lu dirty=%lu pixels=%llu elapsedUs=%llu maxUs=%llu maxPixels=%llu over16ms=%llu over33ms=%llu over50ms=%llu visible=%u\n",
+                a->Presents, p->NumMoves, p->NumDirtyRects, workPixels,
+                elapsedUs, a->PresentMaxUs, a->PresentMaxPixels,
+                a->PresentOver16ms, a->PresentOver33ms,
+                a->PresentOver50ms, a->Visible);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         a->NeedFull = TRUE; result = GetExceptionCode();
     }

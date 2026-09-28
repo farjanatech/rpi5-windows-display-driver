@@ -251,6 +251,11 @@ $report = [ordered]@{
     PowerCapabilities=(Read-Optional { & powercfg.exe /a 2>&1 | Out-String });
     SleepPolicy=(Read-Optional { & powercfg.exe /query SCHEME_CURRENT SUB_SLEEP 2>&1 | Out-String });
     DisplayPowerPolicy=(Read-Optional { & powercfg.exe /query SCHEME_CURRENT SUB_VIDEO 2>&1 | Out-String });
+    Processor=(Read-Optional { Get-CimInstance Win32_Processor | Select-Object Name,CurrentClockSpeed,MaxClockSpeed,LoadPercentage });
+    ThermalZones=(Read-Optional {
+        @(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop |
+            Select-Object InstanceName,CurrentTemperature,CriticalTripPoint,PassiveTripPoint)
+    });
     KernelDebugBootConfiguration=(Read-Optional { & bcdedit.exe /enum '{current}' 2>&1 | Out-String });
     HardwareValidated=$false;
     Notes=@('Review/redact device identifiers and paths before sharing this report.',
