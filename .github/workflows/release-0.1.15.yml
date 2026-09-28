@@ -1,0 +1,92 @@
+name: Publish 0.1.15 hardware-verified stable
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "RELEASES/0.1.15.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts,tests -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+
+      - name: Run portable contract tests
+        shell: pwsh
+        run: |
+          python tests/vsync_startup_contract_test.py
+          python tests/present_performance_contract_test.py
+          python tests/power_contract_test.py
+
+      - name: Build and validate Debug ARM64 CMD installer
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Debug -TestSign
+
+      - name: Build and validate Release ARM64 package
+        shell: pwsh
+        run: ./scripts/Build.ps1 -Configuration Release -TestSign
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $inf = Get-Content package/Rpi5Display.inf -Raw
+          if ($inf -notmatch 'DriverVer=09/28/2026,0\.1\.15\.0') {
+            throw 'Release workflow expected driver version 0.1.15.0.'
+          }
+          $header = Get-Content driver/display.h -Raw
+          if ($header -notmatch '0\.1\.15-hzfix-idle-power') {
+            throw 'Release workflow expected the verified 0.1.15 driver string.'
+          }
+
+      - name: Package hardware-verified CMD installer
+        shell: pwsh
+        run: |
+          $installer = "Rpi5Display-0.1.15-CMD-Installer.zip"
+          $releaseLab = "Rpi5Display-0.1.15-Release-LAB.zip"
+          if (Test-Path $installer) { Remove-Item $installer -Force }
+          if (Test-Path $releaseLab) { Remove-Item $releaseLab -Force }
+          Compress-Archive -Path "out/ARM64/Debug/*" -DestinationPath $installer -CompressionLevel Optimal
+          Compress-Archive -Path "out/ARM64/Release/*" -DestinationPath $releaseLab -CompressionLevel Optimal
+          $lines = @()
+          foreach ($file in @($installer,$releaseLab)) {
+            $hash = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()
+            $lines += "$hash  $file"
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - name: Publish GitHub stable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v0.1.15"
+          $title = "Rpi5Display 0.1.15 (Hardware-Verified Stable)"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag Rpi5Display-0.1.15-CMD-Installer.zip Rpi5Display-0.1.15-Release-LAB.zip SHA256SUMS.txt --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw "Release asset upload failed." }
+            gh release edit $tag --title $title --notes-file RELEASES/0.1.15.md --latest --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw "Release update failed." }
+          } else {
+            gh release create $tag Rpi5Display-0.1.15-CMD-Installer.zip Rpi5Display-0.1.15-Release-LAB.zip SHA256SUMS.txt --target $env:GITHUB_SHA --title $title --notes-file RELEASES/0.1.15.md --latest --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw "Release creation failed." }
+          }
