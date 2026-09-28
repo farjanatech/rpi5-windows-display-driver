@@ -18,7 +18,7 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.14-hzfix-present-performance"
+#define RP_DRIVER_VERSION "0.1.15-hzfix-idle-power"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
@@ -68,6 +68,9 @@ typedef struct RP_ADAPTER {
     volatile LONG CrashDisplay;
     BOOLEAN Visible, NeedFull;
     DEVICE_POWER_STATE AdapterPower, MonitorPower;
+    volatile LONG64 PowerRequests;
+    volatile LONG64 AdapterPowerTransitions;
+    volatile LONG64 MonitorPowerTransitions;
     ULONG64 Presents;
     ULONG64 PresentMaxUs;
     ULONG64 PresentOver16ms;

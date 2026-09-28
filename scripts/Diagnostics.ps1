@@ -61,6 +61,7 @@ function Save-LabSnapshot {
         @('verifier.exe',@('/querysettings'),'verifier'),
         @('powercfg.exe',@('/a'),'power-states'),
         @('powercfg.exe',@('/query','SCHEME_CURRENT','SUB_SLEEP'),'sleep-policy'),
+        @('powercfg.exe',@('/query','SCHEME_CURRENT','SUB_VIDEO'),'display-policy'),
         @('bcdedit.exe',@('/enum','{current}'),'boot-policy')
     )
     if ($DeviceInstanceId) { $commands+= ,@('pnputil.exe',@('/enum-devices','/instanceid',$DeviceInstanceId,'/drivers','/properties','/resources'),'target-device') }

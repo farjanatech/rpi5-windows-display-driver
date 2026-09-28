@@ -33,6 +33,7 @@ jobs:
           ./out/vsync_timing_test
           python3 tests/vsync_startup_contract_test.py
           python3 tests/present_performance_contract_test.py
+          python3 tests/power_contract_test.py
       - name: Archive the exact reviewed source
         run: git archive --format=zip --output=out/source.zip HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

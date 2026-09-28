@@ -68,6 +68,78 @@ static VOID RpRecordStartState(RP_ADAPTER *a, RP_START_STAGE stage, NTSTATUS sta
     ZwClose(key);
 }
 
+static VOID RpResetPowerDiagnostics(RP_ADAPTER *a)
+{
+    HANDLE key;
+
+    if (!a) return;
+    InterlockedExchange64(&a->PowerRequests, 0);
+    InterlockedExchange64(&a->AdapterPowerTransitions, 0);
+    InterlockedExchange64(&a->MonitorPowerTransitions, 0);
+
+    if (!a->Pdo ||
+        !NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        return;
+    }
+
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsLow", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsHigh", 0);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerUid", MAXULONG);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerState", PowerDeviceUnspecified);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerAction", PowerActionNone);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerPreviousState", PowerDeviceUnspecified);
+    ZwClose(key);
+}
+
+static VOID RpRecordPowerState(
+    RP_ADAPTER *a,
+    ULONG uid,
+    DEVICE_POWER_STATE power,
+    POWER_ACTION action,
+    DEVICE_POWER_STATE previous)
+{
+    HANDLE key;
+    ULONGLONG requests;
+    ULONGLONG adapterTransitions;
+    ULONGLONG monitorTransitions;
+
+    if (!a || !a->Pdo ||
+        !NT_SUCCESS(IoOpenDeviceRegistryKey(
+            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
+        return;
+    }
+
+    requests = (ULONGLONG)InterlockedCompareExchange64(
+        &a->PowerRequests, 0, 0);
+    adapterTransitions = (ULONGLONG)InterlockedCompareExchange64(
+        &a->AdapterPowerTransitions, 0, 0);
+    monitorTransitions = (ULONGLONG)InterlockedCompareExchange64(
+        &a->MonitorPowerTransitions, 0, 0);
+
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsLow", (ULONG)requests);
+    RpWriteStartDword(key, L"Rpi5DisplayPowerRequestsHigh",
+                      (ULONG)(requests >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsLow",
+                      (ULONG)adapterTransitions);
+    RpWriteStartDword(key, L"Rpi5DisplayAdapterPowerTransitionsHigh",
+                      (ULONG)(adapterTransitions >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsLow",
+                      (ULONG)monitorTransitions);
+    RpWriteStartDword(key, L"Rpi5DisplayMonitorPowerTransitionsHigh",
+                      (ULONG)(monitorTransitions >> 32));
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerUid", uid);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerState", (ULONG)power);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerAction", (ULONG)action);
+    RpWriteStartDword(key, L"Rpi5DisplayLastPowerPreviousState",
+                      (ULONG)previous);
+    ZwClose(key);
+}
+
 BOOLEAN RpEnter(RP_ADAPTER *a)
 {
     if (!a || !ExAcquireRundownProtection(&a->Rundown)) return FALSE;
@@ -375,6 +447,7 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     a->Shadow.pitch = a->Display.Pitch; a->Shadow.size = bytes;
     a->Visible = TRUE; a->NeedFull = TRUE;
     a->AdapterPower = a->MonitorPower = PowerDeviceD0;
+    RpResetPowerDiagnostics(a);
     a->Presents = 0;
     a->PresentMaxUs = 0;
     a->PresentOver16ms = 0;
@@ -555,20 +628,62 @@ NTSTATUS APIENTRY RpCaps(CONST HANDLE context, CONST DXGKARG_QUERYADAPTERINFO *i
 NTSTATUS NTAPI RpPower(PVOID context, ULONG uid, DEVICE_POWER_STATE power, POWER_ACTION action)
 {
     RP_ADAPTER *a = context;
-    RP_RECT full;
-    RP_LOG("Power uid=%lu state=%u action=%u\n", uid, (UINT)power, (UINT)action);
-    if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) return STATUS_INVALID_PARAMETER;
-    if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) return STATUS_INVALID_PARAMETER;
-    /* Physical adapter suspend is not implemented. Do not report it as working.
-       The lab runbook requires sleep/hibernation disabled before opting in. */
-    if (uid == DISPLAY_ADAPTER_HW_ID && power != PowerDeviceD0 &&
-        action != PowerActionShutdown && action != PowerActionShutdownReset && action != PowerActionShutdownOff)
-        return STATUS_NOT_SUPPORTED;
-    if (!RpEnter(a)) return STATUS_SUCCESS;
-    if (uid == DISPLAY_ADAPTER_HW_ID) a->AdapterPower = power; else a->MonitorPower = power;
-    full.left = full.top = 0; full.right = (LONG)a->Display.Width; full.bottom = (LONG)a->Display.Height;
-    if (power == PowerDeviceD0) RpFlush(a, full); else RpBlank(a);
-    RpLeave(a); return STATUS_SUCCESS;
+    DEVICE_POWER_STATE previous;
+
+    PAGED_CODE();
+
+    if (!a || power < PowerDeviceD0 || power > PowerDeviceD3) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (uid != DISPLAY_ADAPTER_HW_ID && uid != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    InterlockedIncrement64(&a->PowerRequests);
+    if (uid == DISPLAY_ADAPTER_HW_ID) {
+        InterlockedIncrement64(&a->AdapterPowerTransitions);
+    } else {
+        InterlockedIncrement64(&a->MonitorPowerTransitions);
+    }
+
+    /*
+     * DxgkDdiSetPowerState is a notification/transition contract and should
+     * not reject a valid D-state request. This firmware-framebuffer KMDOD does
+     * not physically gate BCM2712 display power yet; mirror Microsoft's KMDOD
+     * sample by tracking the requested state and returning success.
+     *
+     * Do not synchronously blank or repaint the 8 MiB framebuffer from this
+     * callback. On a D0 return, mark the next PresentDisplayOnly as a full
+     * repair instead. This keeps idle power transitions out of the display
+     * hot path and avoids stale framebuffer content after a low-power period.
+     */
+    if (!RpEnter(a)) {
+        previous = (uid == DISPLAY_ADAPTER_HW_ID) ?
+            a->AdapterPower : a->MonitorPower;
+        RpRecordPowerState(a, uid, power, action, previous);
+        RP_LOG("Power ignored while inactive uid=%lu previous=%u state=%u action=%u\n",
+               uid, (UINT)previous, (UINT)power, (UINT)action);
+        return STATUS_SUCCESS;
+    }
+
+    if (uid == DISPLAY_ADAPTER_HW_ID) {
+        previous = a->AdapterPower;
+        a->AdapterPower = power;
+    } else {
+        previous = a->MonitorPower;
+        a->MonitorPower = power;
+    }
+
+    if (power == PowerDeviceD0 && previous != PowerDeviceD0) {
+        a->NeedFull = TRUE;
+    }
+
+    RP_LOG("Power uid=%lu previous=%u state=%u action=%u needFull=%u\n",
+           uid, (UINT)previous, (UINT)power, (UINT)action, a->NeedFull);
+    RpLeave(a);
+
+    RpRecordPowerState(a, uid, power, action, previous);
+    return STATUS_SUCCESS;
 }
 VOID NTAPI RpReset(PVOID context) { UNREFERENCED_PARAMETER(context); }
 VOID NTAPI RpUnload(VOID) { RP_LOG("Unload\n"); RpTraceShutdown(); }

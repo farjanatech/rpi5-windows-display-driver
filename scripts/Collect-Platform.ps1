@@ -207,7 +207,17 @@ foreach ($device in $devices) {
                 VSyncLastDisablePvInten=$key.GetValue('Rpi5DisplayVSyncLastDisablePvInten',$null);
                 VSyncLastDisablePvIntstat=$key.GetValue('Rpi5DisplayVSyncLastDisablePvIntstat',$null);
                 VSyncPvIntenBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntenBeforeStop',$null);
-                VSyncPvIntstatBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntstatBeforeStop',$null)
+                VSyncPvIntstatBeforeStop=$key.GetValue('Rpi5DisplayVSyncPvIntstatBeforeStop',$null);
+                PowerRequestsLow=$key.GetValue('Rpi5DisplayPowerRequestsLow',$null);
+                PowerRequestsHigh=$key.GetValue('Rpi5DisplayPowerRequestsHigh',$null);
+                AdapterPowerTransitionsLow=$key.GetValue('Rpi5DisplayAdapterPowerTransitionsLow',$null);
+                AdapterPowerTransitionsHigh=$key.GetValue('Rpi5DisplayAdapterPowerTransitionsHigh',$null);
+                MonitorPowerTransitionsLow=$key.GetValue('Rpi5DisplayMonitorPowerTransitionsLow',$null);
+                MonitorPowerTransitionsHigh=$key.GetValue('Rpi5DisplayMonitorPowerTransitionsHigh',$null);
+                LastPowerUid=$key.GetValue('Rpi5DisplayLastPowerUid',$null);
+                LastPowerState=$key.GetValue('Rpi5DisplayLastPowerState',$null);
+                LastPowerAction=$key.GetValue('Rpi5DisplayLastPowerAction',$null);
+                LastPowerPreviousState=$key.GetValue('Rpi5DisplayLastPowerPreviousState',$null)
             }
         } finally { $key.Dispose() }
     }
@@ -240,6 +250,7 @@ $report = [ordered]@{
     VideoControllers=(Read-Optional { Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentBitsPerPixel,CurrentRefreshRate });
     PowerCapabilities=(Read-Optional { & powercfg.exe /a 2>&1 | Out-String });
     SleepPolicy=(Read-Optional { & powercfg.exe /query SCHEME_CURRENT SUB_SLEEP 2>&1 | Out-String });
+    DisplayPowerPolicy=(Read-Optional { & powercfg.exe /query SCHEME_CURRENT SUB_VIDEO 2>&1 | Out-String });
     KernelDebugBootConfiguration=(Read-Optional { & bcdedit.exe /enum '{current}' 2>&1 | Out-String });
     HardwareValidated=$false;
     Notes=@('Review/redact device identifiers and paths before sharing this report.',
