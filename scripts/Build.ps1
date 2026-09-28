@@ -61,9 +61,14 @@ try {
     $signTool = Find-One $sdk 'signtool.exe' '[\\/]x64[\\/]'
     if ($TestSign) {
         Write-Host 'PHASE: create disposable lab signing identity'
+        # Backdate the disposable signer by one day. The physical Pi can have
+        # modest RTC/NTP skew relative to the CI VM; a certificate whose NotBefore
+        # equals the CI wall clock can otherwise be rejected before installation.
+        # Keep the lifetime short and continue to pin the exact thumbprint.
         $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Rpi5Display CI LAB ONLY' `
             -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 3072 `
-            -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddMonths(1)
+            -HashAlgorithm SHA256 -KeyExportPolicy NonExportable `
+            -NotBefore (Get-Date).AddDays(-1) -NotAfter (Get-Date).AddMonths(1)
         $cer = Join-Path $Package 'Rpi5Display.cer'
         Export-Certificate -Cert $cert -FilePath $cer | Out-Null
         Write-Host "LAB certificate thumbprint (pin independently from this run): $($cert.Thumbprint)"

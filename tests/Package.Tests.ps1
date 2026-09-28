@@ -5,6 +5,14 @@ $ErrorActionPreference='Stop'
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Lab-Common.ps1')
 Initialize-LabNative  # Compile the P/Invoke declarations, but do not open or change any device.
 $null=Test-LabManifest -ArtifactRoot $ArtifactRoot -ExpectedCommit $ExpectedCommit -ExpectedThumbprint $ExpectedThumbprint
+$labCert=[Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $ArtifactRoot 'package/Rpi5Display.cer'))
+if ($labCert.NotBefore -gt (Get-Date).AddHours(-12)) {
+    throw "Lab signer is not sufficiently backdated for target clock skew: NotBefore=$($labCert.NotBefore.ToString('o'))"
+}
+if ($labCert.NotAfter -lt (Get-Date).AddDays(20)) {
+    throw "Lab signer lifetime is unexpectedly short: NotAfter=$($labCert.NotAfter.ToString('o'))"
+}
+Write-Host "PASS: lab signer is backdated for clock skew and remains short-lived."
 function Must-Reject([scriptblock]$Operation,[string]$Name) {
     $rejected=$false
     try { & $Operation | Out-Null } catch { $rejected=$true }
