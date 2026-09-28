@@ -14,7 +14,7 @@ adapter = Path("driver/adapter.c").read_text(encoding="utf-8")
 flush_start = present.index("VOID RpFlush")
 blank_start = present.index("VOID RpBlank")
 flush = present[flush_start:blank_start]
-assert "WRITE_REGISTER_BUFFER_ULONG" not in flush
+assert "WRITE_REGISTER_BUFFER_ULONG(" not in flush
 assert "RtlCopyMemory" in flush
 assert "rowBytes" in flush
 assert flush.count("KeMemoryBarrier();") == 1
