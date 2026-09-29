@@ -21,7 +21,7 @@ if (!(Test-Admin)) {
     exit $child.ExitCode
 }
 
-$root=Join-Path $env:ProgramData 'Rpi5Display\SoakWatch'
+$root=Join-Path $PSScriptRoot 'Logs'
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 
 function Invoke-TextCommand([string]$File,[string[]]$Arguments,[string]$Path) {
@@ -107,8 +107,7 @@ if ($Mode -eq 'Recover') {
     Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/query','SCHEME_CURRENT','SUB_VIDEO') (Join-Path $recovery 'display-power.txt') | Out-Null
     Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/query','SCHEME_CURRENT','SUB_SLEEP') (Join-Path $recovery 'sleep-power.txt') | Out-Null
 
-    $desktop=[Environment]::GetFolderPath('Desktop')
-    $zip=Join-Path $desktop ('Rpi5Display-Soak-Recovery-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.zip')
+    $zip=Join-Path $root ('Rpi5Display-Soak-Recovery-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.zip')
     Compress-Archive -Path (Join-Path $session.FullName '*') -DestinationPath $zip -CompressionLevel Optimal -Force
     Write-Host "RECOVERY ZIP: $zip" -ForegroundColor Green
     Write-Host 'Upload this ZIP for analysis.'
@@ -159,6 +158,7 @@ $traceActive=($traceStart -eq 0)
 } | ConvertTo-Json | Set-Content (Join-Path $directory 'soak-status.json') -Encoding utf8
 
 Write-Host "SOAK DIRECTORY: $directory"
+Write-Host "All recorder files remain under: $root"
 Write-Host "Driver circular ETW active: $traceActive"
 Write-Host 'Leave this window running. If the hang occurs and this becomes unusable, reboot and run Recover-Soak-Watch.cmd.' -ForegroundColor Yellow
 
