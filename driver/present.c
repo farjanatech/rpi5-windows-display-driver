@@ -221,7 +221,6 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
         result = GetExceptionCode();
     }
 
-done:
     if (!NT_SUCCESS(result)) {
         a->NeedFull = TRUE;
         now = KeQueryPerformanceCounter(NULL);
