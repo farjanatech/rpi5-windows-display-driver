@@ -10,14 +10,14 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
 function Test-Admin {
-    $p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 if (!(Test-Admin)) {
     if ($Elevated) { throw 'Administrator elevation failed.' }
     $ps=Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    $args="-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Mode $Mode -IntervalSeconds $IntervalSeconds -TraceMaxMB $TraceMaxMB -Elevated"
-    $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList $args -Wait -PassThru
+    $arguments="-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Mode $Mode -IntervalSeconds $IntervalSeconds -TraceMaxMB $TraceMaxMB -Elevated"
+    $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     exit $child.ExitCode
 }
 
@@ -53,7 +53,7 @@ function Get-ProcessSummary([string]$Name) {
     $private=($items | Measure-Object -Property PrivateMemorySize64 -Sum).Sum
     $handles=($items | Measure-Object -Property HandleCount -Sum).Sum
     $threads=0
-    foreach($item in $items){$threads += @($item.Threads).Count}
+    foreach ($item in $items) { $threads += @($item.Threads).Count }
     return [ordered]@{CpuSeconds=$cpu; WorkingSetBytes=$ws; PrivateBytes=$private; Handles=$handles; Threads=$threads}
 }
 
@@ -64,9 +64,9 @@ if ($Mode -eq 'Recover') {
 
     $traceNamePath=Join-Path $session.FullName 'trace-name.txt'
     if (Test-Path -LiteralPath $traceNamePath) {
-        $traceName=(Get-Content -LiteralPath $traceNamePath -Raw).Trim()
-        if ($traceName) {
-            & "$env:SystemRoot\System32\logman.exe" stop $traceName -ets *> $null
+        $savedTraceName=(Get-Content -LiteralPath $traceNamePath -Raw).Trim()
+        if ($savedTraceName) {
+            & "$env:SystemRoot\System32\logman.exe" stop $savedTraceName -ets *> $null
         }
     }
 
@@ -83,18 +83,25 @@ if ($Mode -eq 'Recover') {
 
     try {
         Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddHours(-4)} -ErrorAction Stop |
-            Where-Object { $_.Level -le 3 -or $_.ProviderName -in @('Display','Microsoft-Windows-Kernel-PnP','Microsoft-Windows-WHEA-Logger','Microsoft-Windows-Kernel-Power') } |
+            Where-Object {
+                $_.Level -le 3 -or
+                $_.ProviderName -in @('Display','Microsoft-Windows-Kernel-PnP','Microsoft-Windows-WHEA-Logger','Microsoft-Windows-Kernel-Power')
+            } |
             Select-Object -First 2000 TimeCreated,Id,LevelDisplayName,ProviderName,Message |
             Format-List | Out-String -Width 300 |
             Set-Content (Join-Path $recovery 'system-events.txt') -Encoding utf8
-    } catch { $_ | Out-String | Set-Content (Join-Path $recovery 'system-events-error.txt') -Encoding utf8 }
+    } catch {
+        $_ | Out-String | Set-Content (Join-Path $recovery 'system-events-error.txt') -Encoding utf8
+    }
 
     try {
         Get-PnpDevice -Class Display -ErrorAction Stop |
             Select-Object Status,Class,FriendlyName,InstanceId |
             Format-List | Out-String -Width 300 |
             Set-Content (Join-Path $recovery 'display-devices.txt') -Encoding utf8
-    } catch { $_ | Out-String | Set-Content (Join-Path $recovery 'display-devices-error.txt') -Encoding utf8 }
+    } catch {
+        $_ | Out-String | Set-Content (Join-Path $recovery 'display-devices-error.txt') -Encoding utf8
+    }
 
     Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/a') (Join-Path $recovery 'power-states.txt') | Out-Null
     Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/query','SCHEME_CURRENT','SUB_VIDEO') (Join-Path $recovery 'display-power.txt') | Out-Null
@@ -102,7 +109,7 @@ if ($Mode -eq 'Recover') {
 
     $desktop=[Environment]::GetFolderPath('Desktop')
     $zip=Join-Path $desktop ('Rpi5Display-Soak-Recovery-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.zip')
-    Compress-Archive -LiteralPath (Join-Path $session.FullName '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+    Compress-Archive -Path (Join-Path $session.FullName '*') -DestinationPath $zip -CompressionLevel Optimal -Force
     Write-Host "RECOVERY ZIP: $zip" -ForegroundColor Green
     Write-Host 'Upload this ZIP for analysis.'
     exit 0
@@ -123,7 +130,7 @@ IntervalSeconds=$IntervalSeconds
 TraceMaxMB=$TraceMaxMB
 
 Leave this recorder running while the Pi is healthy.
-If the machine becomes too laggy to collect logs, force-reboot only if necessary,
+If the machine becomes too laggy to collect logs, reboot only if necessary,
 then run Recover-Soak-Watch.cmd. metrics.csv is flushed every sample and the
 driver ETW session uses a circular file with a one-second flush timer.
 "@ | Set-Content (Join-Path $directory 'soak-info.txt') -Encoding utf8
@@ -133,10 +140,12 @@ Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/getactivescheme')
 Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/query','SCHEME_CURRENT','SUB_VIDEO') (Join-Path $directory 'display-power.txt') | Out-Null
 Invoke-TextCommand "$env:SystemRoot\System32\powercfg.exe" @('/query','SCHEME_CURRENT','SUB_SLEEP') (Join-Path $directory 'sleep-power.txt') | Out-Null
 
-$logmanArgs=@('create','trace',$traceName,'-ow','-o',$etl,
+$logmanArgs=@(
+    'create','trace',$traceName,'-ow','-o',$etl,
     '-p',$provider,'0xffffffffffffffff','5',
     '-f','bincirc','-max',[string]$TraceMaxMB,'-bs','64','-nb','16','64',
-    '-ft','00:00:01','-ets')
+    '-ft','00:00:01','-ets'
+)
 $traceStart=Invoke-TextCommand "$env:SystemRoot\System32\logman.exe" $logmanArgs (Join-Path $directory 'trace-start.txt')
 $traceActive=($traceStart -eq 0)
 
@@ -166,29 +175,40 @@ $diskCounters=@(
     '\PhysicalDisk(_Total)\Avg. Disk sec/Transfer',
     '\PhysicalDisk(_Total)\Current Disk Queue Length'
 )
-$cpuClock=$null; $cpuMax=$null; $cpuLoad=$null
-$driverVersion=$null; $problemCode=$null; $deviceStatus=$null
+$cpuClock=$null
+$cpuMax=$null
+$cpuLoad=$null
+$driverVersion=$null
+$problemCode=$null
+$deviceStatus=$null
 $sampleIndex=0
 
 try {
     while ($true) {
         $started=Get-Date
-        $core=$null; $disk=$null
+        $core=$null
+        $disk=$null
         try { $core=(Get-Counter -Counter $coreCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {}
         try { $disk=(Get-Counter -Counter $diskCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {}
 
         if (($sampleIndex % 6) -eq 0) {
             try {
                 $cpu=Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-                $cpuClock=$cpu.CurrentClockSpeed; $cpuMax=$cpu.MaxClockSpeed; $cpuLoad=$cpu.LoadPercentage
+                $cpuClock=$cpu.CurrentClockSpeed
+                $cpuMax=$cpu.MaxClockSpeed
+                $cpuLoad=$cpu.LoadPercentage
             } catch {}
             try {
-                $dev=Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'ACPI\BCM2712\*' } | Select-Object -First 1
+                $dev=Get-PnpDevice -PresentOnly -ErrorAction Stop |
+                    Where-Object { $_.InstanceId -like 'ACPI\BCM2712\*' } |
+                    Select-Object -First 1
                 if ($dev) {
                     $deviceStatus=$dev.Status
                     $props=@(Get-PnpDeviceProperty -InstanceId $dev.InstanceId -ErrorAction Stop)
-                    $driverVersion=($props | Where-Object KeyName -eq 'DEVPKEY_Device_DriverVersion' | Select-Object -First 1).Data
-                    $problemCode=($props | Where-Object KeyName -eq 'DEVPKEY_Device_ProblemCode' | Select-Object -First 1).Data
+                    $driverProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_DriverVersion' | Select-Object -First 1
+                    $problemProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_ProblemCode' | Select-Object -First 1
+                    if ($driverProperty) { $driverVersion=$driverProperty.Data }
+                    if ($problemProperty) { $problemCode=$problemProperty.Data }
                 }
             } catch {}
         }
@@ -198,15 +218,15 @@ try {
         $row=[pscustomobject][ordered]@{
             TimestampUtc=[DateTime]::UtcNow.ToString('o')
             UptimeSeconds=[math]::Round([Environment]::TickCount64/1000.0,1)
-            CpuPercent=Get-CounterValue $core '\processor(_total)\% processor time'
-            DpcPercent=Get-CounterValue $core '\processor(_total)\% dpc time'
-            InterruptPercent=Get-CounterValue $core '\processor(_total)\% interrupt time'
-            ProcessorQueue=Get-CounterValue $core '\system\processor queue length'
-            AvailableMB=Get-CounterValue $core '\memory\available mbytes'
-            NonpagedPoolBytes=Get-CounterValue $core '\memory\pool nonpaged bytes'
-            PagedPoolBytes=Get-CounterValue $core '\memory\pool paged bytes'
-            DiskLatencySeconds=Get-CounterValue $disk '\physicaldisk(_total)\avg. disk sec/transfer'
-            DiskQueue=Get-CounterValue $disk '\physicaldisk(_total)\current disk queue length'
+            CpuPercent=(Get-CounterValue $core '\processor(_total)\% processor time')
+            DpcPercent=(Get-CounterValue $core '\processor(_total)\% dpc time')
+            InterruptPercent=(Get-CounterValue $core '\processor(_total)\% interrupt time')
+            ProcessorQueue=(Get-CounterValue $core '\system\processor queue length')
+            AvailableMB=(Get-CounterValue $core '\memory\available mbytes')
+            NonpagedPoolBytes=(Get-CounterValue $core '\memory\pool nonpaged bytes')
+            PagedPoolBytes=(Get-CounterValue $core '\memory\pool paged bytes')
+            DiskLatencySeconds=(Get-CounterValue $disk '\physicaldisk(_total)\avg. disk sec/transfer')
+            DiskQueue=(Get-CounterValue $disk '\physicaldisk(_total)\current disk queue length')
             CpuClockMHz=$cpuClock
             CpuMaxMHz=$cpuMax
             CpuLoadPercent=$cpuLoad
@@ -224,8 +244,12 @@ try {
             ProblemCode=$problemCode
             DeviceStatus=$deviceStatus
         }
-        if (!(Test-Path -LiteralPath $metrics)) { $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8 }
-        else { $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8 -Append }
+
+        if (!(Test-Path -LiteralPath $metrics)) {
+            $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8
+        } else {
+            $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8 -Append
+        }
 
         ++$sampleIndex
         $elapsed=((Get-Date)-$started).TotalSeconds
