@@ -18,7 +18,13 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.15-hzfix-idle-power"
+/*
+ * 0.1.17 hardware A/B: preserve the firmware-configured physical scanout but
+ * do not advertise KMDOD VSync control to dxgkrnl. Windows simulates VSync and
+ * scan-line timing for this candidate.
+ */
+#define RP_WINDOWS_VSYNC_MODE_SIMULATED 1u
+#define RP_DRIVER_VERSION "0.1.17-ab-simulated-vsync"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
