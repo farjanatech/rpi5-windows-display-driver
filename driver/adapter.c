@@ -35,7 +35,6 @@ typedef enum RP_START_STAGE {
 } RP_START_STAGE;
 
 static BOOLEAN gRpVSyncRegistrationEnabled = FALSE;
-static BOOLEAN gRpVSyncHardwareAvailable = FALSE;
 
 static VOID RpWriteStartDword(HANDLE key, PCWSTR valueName, ULONG value)
 {
@@ -66,25 +65,6 @@ static VOID RpRecordStartState(RP_ADAPTER *a, RP_START_STAGE stage, NTSTATUS sta
         RpWriteStartDword(key, L"Rpi5DisplayPostPhysLow", display->PhysicAddress.LowPart);
         RpWriteStartDword(key, L"Rpi5DisplayPostPhysHigh", (ULONG)display->PhysicAddress.HighPart);
     }
-    ZwClose(key);
-}
-
-static VOID RpRecordVSyncExperimentState(RP_ADAPTER *a)
-{
-    HANDLE key;
-
-    if (!a || !a->Pdo ||
-        !NT_SUCCESS(IoOpenDeviceRegistryKey(
-            a->Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &key))) {
-        return;
-    }
-
-    RpWriteStartDword(key, L"Rpi5DisplayVSyncHardwareAvailable",
-                      gRpVSyncHardwareAvailable ? 1u : 0u);
-    RpWriteStartDword(key, L"Rpi5DisplayVSyncAdvertised",
-                      a->VSyncAdvertised ? 1u : 0u);
-    RpWriteStartDword(key, L"Rpi5DisplayWindowsVSyncMode",
-                      RP_WINDOWS_VSYNC_MODE_SIMULATED);
     ZwClose(key);
 }
 
@@ -297,19 +277,16 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
     RP_LOG("handoff transport initialization status=0x%08lx\n", status);
 
     /*
-     * 0.1.17 A/B experiment:
-     *
-     * Keep the hardware VSync implementation compiled and probe whether its
-     * firmware prerequisites are available, but deliberately do NOT expose
-     * DxgkDdiControlInterrupt or DxgkDdiGetScanLine in this build.
-     *
-     * Windows then simulates VSync/scan-line timing. RpSignal reports
-     * D3DKMDT_FREQUENCY_NOTSPECIFIED because VSyncHardwareReady remains FALSE.
-     * InterruptRoutine/DpcRoutine stay in the base KMDOD table, matching the
-     * Microsoft reference KMDOD without optional VSync control.
+     * Windows requires GetScanLine + ControlInterrupt as a pair when a KMDOD
+     * reports real signal frequencies. Bind the pair only when either the
+     * UEFI variable or the ACPI R5DH table provides a validated handoff.
      */
-    gRpVSyncHardwareAvailable = RpVSyncRegistrationAvailable();
-    gRpVSyncRegistrationEnabled = FALSE;
+    gRpVSyncRegistrationEnabled = RpVSyncRegistrationAvailable();
+    if (gRpVSyncRegistrationEnabled) {
+        #define RP_BIND_VSYNC_CALLBACK(field, function) init.field = function;
+        RP_DOD_VSYNC_CALLBACK_BINDINGS(RP_BIND_VSYNC_CALLBACK)
+        #undef RP_BIND_VSYNC_CALLBACK
+    }
 
     /* A required dispatch entry must exist even when every legacy IOCTL is unsupported. */
     #define RP_CHECK_CALLBACK(field) if (!init.field) { ++missing; RP_LOG("registration missing callback=%s\n", #field); }
@@ -328,8 +305,8 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT object, PUNICODE_STRING path)
         (ULONG)sizeof(init), (ULONG)sizeof(PVOID),
         (ULONG)FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest),
         os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, status);
-    RP_LOG("registering experimental firmware-framebuffer KMDOD vsyncControl=%u hardwareVSyncAvailable=%u windowsVSyncMode=simulated\n",
-        gRpVSyncRegistrationEnabled, gRpVSyncHardwareAvailable);
+    RP_LOG("registering experimental firmware-framebuffer KMDOD vsyncControl=%u\n",
+        gRpVSyncRegistrationEnabled);
     status = DxgkInitializeDisplayOnlyDriver(object, path, &init);
     RP_LOG("DriverEntry version=%s status=0x%08lx\n", RP_DRIVER_VERSION, status);
     if (!NT_SUCCESS(status)) RpTraceShutdown();
@@ -372,7 +349,6 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
         RpRecordStartState(a, RpStartEntered, STATUS_DEVICE_CONFIGURATION_ERROR, NULL, 0);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
-    RpRecordVSyncExperimentState(a);
     if (a->Active || a->Framebuffer || a->PixelValveRegs) {
         RpRecordStartState(a, RpStartEntered, STATUS_INVALID_DEVICE_STATE, NULL, 0);
         return STATUS_INVALID_DEVICE_STATE;
