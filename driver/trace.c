@@ -30,3 +30,33 @@ VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...)
         TraceLoggingLevel(4), TraceLoggingString(RP_DRIVER_VERSION, "DriverVersion"),
         TraceLoggingString(message, "Message"));
 }
+
+VOID RpTracePresentPhase(
+    ULONGLONG presentId,
+    ULONG phase,
+    ULONGLONG sinceEntryUs,
+    ULONGLONG workPixels,
+    ULONG moves,
+    ULONG dirty,
+    ULONG visible,
+    ULONG status)
+{
+    /*
+     * Trace-only Present instrumentation. Do not use RP_LOG here: that would
+     * also call DbgPrintEx on every Present phase and perturb the hot path.
+     * The soak recorder enables this provider into a bounded circular ETL.
+     */
+    TraceLoggingWrite(
+        gRpProvider,
+        "PresentPhase",
+        TraceLoggingLevel(5),
+        TraceLoggingString(RP_DRIVER_VERSION, "DriverVersion"),
+        TraceLoggingUInt64(presentId, "PresentId"),
+        TraceLoggingUInt32(phase, "Phase"),
+        TraceLoggingUInt64(sinceEntryUs, "SinceEntryUs"),
+        TraceLoggingUInt64(workPixels, "WorkPixels"),
+        TraceLoggingUInt32(moves, "Moves"),
+        TraceLoggingUInt32(dirty, "DirtyRects"),
+        TraceLoggingUInt32(visible, "Visible"),
+        TraceLoggingUInt32(status, "Status"));
+}
