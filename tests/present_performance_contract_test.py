@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.16 desktop-latency hot paths."""
+"""Static regression for the 0.1.17 A/B desktop-latency hot paths."""
 
 from pathlib import Path
 
@@ -65,4 +65,4 @@ assert "DxgkCbNotifyInterrupt" in isr
 assert "DxgkCbQueueDpc" in isr
 assert "DxgkCbNotifyDpc" in adapter
 
-print("PASS: 0.1.16 uses bulk shadow/framebuffer copies and one-shot-safe hot paths")
+print("PASS: 0.1.17 retains bulk shadow/framebuffer copies and hot-path profiling")
