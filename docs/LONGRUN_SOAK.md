@@ -46,3 +46,21 @@ display device status, driver version and ProblemCode.
 
 The recorder does not install or change the display driver, firmware, power plan
 or boot configuration.
+
+
+## 0.1.18 Present-phase capture
+
+The 0.1.18 diagnostic driver restores the normal hardware-VSync configuration
+and emits trace-only Present phase events into the same circular ETW session.
+
+Phase values:
+
+- 1: PresentDisplayOnly entered the driver
+- 2: adapter mutex acquired
+- 3: shadow-buffer work completed
+- 4: framebuffer flush completed successfully
+- 5: Present exited with an error
+
+Each event carries a PresentId so the last incomplete call can be identified.
+The driver initializes QPC timing independently of VSync, so elapsed microseconds
+remain valid even in future A/B builds.
