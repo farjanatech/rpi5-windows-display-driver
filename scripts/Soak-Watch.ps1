@@ -95,6 +95,19 @@ if ($Mode -eq 'Recover') {
     }
 
     try {
+        Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddHours(-4)} -ErrorAction Stop |
+            Where-Object {
+                $_.Level -le 3 -or
+                $_.ProviderName -in @('Application Hang','Application Error','Windows Error Reporting','Desktop Window Manager')
+            } |
+            Select-Object -First 2000 TimeCreated,Id,LevelDisplayName,ProviderName,Message |
+            Format-List | Out-String -Width 300 |
+            Set-Content (Join-Path $recovery 'application-events.txt') -Encoding utf8
+    } catch {
+        $_ | Out-String | Set-Content (Join-Path $recovery 'application-events-error.txt') -Encoding utf8
+    }
+
+    try {
         Get-PnpDevice -Class Display -ErrorAction Stop |
             Select-Object Status,Class,FriendlyName,InstanceId |
             Format-List | Out-String -Width 300 |
