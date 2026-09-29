@@ -23,7 +23,7 @@ static VOID RpSignal(RP_ADAPTER *a, D3DKMDT_VIDEO_SIGNAL_INFO *s)
     s->ActiveSize.cy = a->Display.Height;
     s->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 
-    if (a->FirmwareTimingValid && a->VSyncHardwareReady) {
+    if (a->VSyncAdvertised && a->FirmwareTimingValid && a->VSyncHardwareReady) {
         pixelHz = (ULONGLONG)a->FirmwareDisplay.timing.clock_khz * 1000ULL;
         frameTotal = (ULONGLONG)a->FirmwareDisplay.timing.htotal *
             a->FirmwareDisplay.timing.vtotal;
@@ -60,7 +60,7 @@ static BOOLEAN RpTargetValid(RP_ADAPTER *a, const D3DKMDT_VIDPN_TARGET_MODE *m)
     if (!m || m->VideoSignalInfo.ActiveSize.cx != a->Display.Width ||
         m->VideoSignalInfo.ActiveSize.cy != a->Display.Height ||
         m->VideoSignalInfo.ScanLineOrdering != D3DDDI_VSSLO_PROGRESSIVE) return FALSE;
-    if (a->FirmwareTimingValid && a->VSyncHardwareReady) {
+    if (a->VSyncAdvertised && a->FirmwareTimingValid && a->VSyncHardwareReady) {
         ULONGLONG pixelHz = (ULONGLONG)a->FirmwareDisplay.timing.clock_khz * 1000ULL;
         if (m->VideoSignalInfo.TotalSize.cx != a->FirmwareDisplay.timing.htotal ||
             m->VideoSignalInfo.TotalSize.cy != a->FirmwareDisplay.timing.vtotal ||
