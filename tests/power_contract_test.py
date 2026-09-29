@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.17 simulated-VSync A/B power-state contract."""
+"""Static regression for the 0.1.16 idle/power-state contract."""
 
 from pathlib import Path
 
@@ -9,8 +9,8 @@ header = Path("driver/display.h").read_text(encoding="utf-8")
 inf = Path("package/Rpi5Display.inf").read_text(encoding="utf-8")
 collector = Path("scripts/Collect-Platform.ps1").read_text(encoding="utf-8")
 
-assert 'RP_DRIVER_VERSION "0.1.17-ab-simulated-vsync"' in header
-assert "DriverVer=09/29/2026,0.1.17.0" in inf
+assert 'RP_DRIVER_VERSION "0.1.16-longrun-anchor-copy"' in header
+assert "DriverVer=09/29/2026,0.1.16.0" in inf
 
 start = adapter.index("NTSTATUS NTAPI RpPower")
 end = adapter.index("VOID NTAPI RpReset", start)
@@ -36,4 +36,4 @@ assert "PowerRequests" in header
 assert "Rpi5DisplayLastPowerState" in collector
 assert "SUB_VIDEO" in collector
 
-print("PASS: 0.1.17 preserves idle D-state handling during simulated-VSync A/B")
+print("PASS: 0.1.16 preserves idle D-state handling and deferred framebuffer repair")
