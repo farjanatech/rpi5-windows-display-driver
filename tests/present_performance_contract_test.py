@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.15 desktop-latency hot paths."""
+"""Static regression for the 0.1.16 desktop-latency hot paths."""
 
 from pathlib import Path
 
 present = Path("driver/present.c").read_text(encoding="utf-8")
 vsync = Path("driver/vsync.c").read_text(encoding="utf-8")
 adapter = Path("driver/adapter.c").read_text(encoding="utf-8")
+framebuffer = Path("core/framebuffer.h").read_text(encoding="utf-8")
 
 # The write-combined framebuffer is memory, not a register bank. A full 1080p
 # update must not execute a register-buffer operation (and its ordering
@@ -26,6 +27,13 @@ blank = present[blank_start:rect_start]
 assert "RtlZeroMemory" in blank
 assert "volatile ULONG" not in blank
 assert blank.count("KeMemoryBarrier();") == 1
+
+# Shadow-buffer copies/moves must use bulk memory primitives. The exhaustive
+# framebuffer test separately validates all overlap directions under ASan/UBSan.
+assert "RP_MEMCPY(dst->data + d, src->data + s, count);" in framebuffer
+assert "RP_MEMMOVE(s->data + d, s->data + a, count);" in framebuffer
+assert "for (x = 0; x < count;" not in framebuffer
+assert "for (x = count; x != 0;" not in framebuffer
 
 # Keep high-resolution timing and copy-area evidence for idle degradation.
 assert "PresentMaxUs" in present
@@ -57,4 +65,4 @@ assert "DxgkCbNotifyInterrupt" in isr
 assert "DxgkCbQueueDpc" in isr
 assert "DxgkCbNotifyDpc" in adapter
 
-print("PASS: framebuffer hot path is memory-copy based and Present profiling uses high-resolution QPC timing")
+print("PASS: 0.1.16 uses bulk shadow/framebuffer copies and one-shot-safe hot paths")
