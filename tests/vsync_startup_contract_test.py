@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.16 KMDOD VSync-control contract."""
+"""Static regression for the 0.1.18 KMDOD VSync-control contract."""
 
 from pathlib import Path
 
@@ -8,8 +8,8 @@ source = Path("driver/vsync.c").read_text(encoding="utf-8")
 header = Path("driver/display.h").read_text(encoding="utf-8")
 inf = Path("package/Rpi5Display.inf").read_text(encoding="utf-8")
 
-assert 'RP_DRIVER_VERSION "0.1.16-longrun-anchor-copy"' in header
-assert "DriverVer=09/29/2026,0.1.16.0" in inf
+assert 'RP_DRIVER_VERSION "0.1.18-present-phase-diag"' in header
+assert "DriverVer=09/29/2026,0.1.18.0" in inf
 
 assert "RP_VSYNC_PHASE_PROVISIONAL" in source
 assert "RP_VSYNC_PHASE_HARDWARE" in source
@@ -79,4 +79,4 @@ shutdown_block = source[shutdown:control]
 assert 'L"Rpi5DisplayVSyncAnchorReady", 0' not in shutdown_block
 assert "Rpi5DisplayVSyncInterruptEnabledBeforeStop" in shutdown_block
 
-print("PASS: 0.1.16 preserves KMDOD VSync and keeps anchor diagnostics one-shot")
+print("PASS: 0.1.18 preserves KMDOD VSync and keeps anchor diagnostics one-shot")
