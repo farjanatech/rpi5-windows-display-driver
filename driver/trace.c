@@ -43,7 +43,7 @@ VOID RpTracePresentPhase(
 {
     /*
      * Trace-only Present instrumentation. Do not use RP_LOG here: that would
-     * also call DbgPrintEx on every Present phase and perturb the hot path.
+     * also emit a kernel debug print on every Present phase and perturb the hot path.
      * The soak recorder enables this provider into a bounded circular ETL.
      */
     TraceLoggingWrite(
