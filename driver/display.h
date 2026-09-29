@@ -18,11 +18,28 @@ C_ASSERT(sizeof(PVOID) == 8);
 C_ASSERT(FIELD_OFFSET(KMDDOD_INITIALIZATION_DATA, DxgkDdiDispatchIoRequest) == 0x28);
 #define RP_POOL_TAG '5DpR'
 #define RP_MAX_RECTS 4096u
-#define RP_DRIVER_VERSION "0.1.15-hzfix-idle-power"
+#define RP_DRIVER_VERSION "0.1.18-present-phase-diag"
 VOID RpTraceInitialize(VOID);
 VOID RpTraceShutdown(VOID);
 VOID RpLog(_In_z_ _Printf_format_string_ PCSTR Format, ...);
+VOID RpTracePresentPhase(
+    ULONGLONG presentId,
+    ULONG phase,
+    ULONGLONG sinceEntryUs,
+    ULONGLONG workPixels,
+    ULONG moves,
+    ULONG dirty,
+    ULONG visible,
+    ULONG status);
 #define RP_LOG(...) RpLog(__VA_ARGS__)
+typedef enum RP_PRESENT_PHASE {
+    RpPresentPhaseEntry = 1,
+    RpPresentPhaseLocked = 2,
+    RpPresentPhaseShadowDone = 3,
+    RpPresentPhaseFlushDone = 4,
+    RpPresentPhaseExitError = 5
+} RP_PRESENT_PHASE;
+
 typedef enum RP_HANDOFF_SOURCE {
     RpHandoffNone = 0,
     RpHandoffUefiVariable = 1,
@@ -71,6 +88,8 @@ typedef struct RP_ADAPTER {
     volatile LONG64 PowerRequests;
     volatile LONG64 AdapterPowerTransitions;
     volatile LONG64 MonitorPowerTransitions;
+    volatile LONG64 PresentEntered;
+    volatile LONG64 PresentCompleted;
     ULONG64 Presents;
     ULONG64 PresentMaxUs;
     ULONG64 PresentOver16ms;
