@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.17 A/B desktop-latency hot paths."""
+"""Static regression for the 0.1.18 Present-phase diagnostic hot paths."""
 
 from pathlib import Path
 
@@ -45,6 +45,27 @@ assert "PresentOver16ms" in present
 assert "pixels=%llu" in present
 assert "maxPresentUs=" in adapter
 
+# QPC frequency must be initialized unconditionally in StartDevice, not only by
+# the optional hardware-VSync initializer.
+start = adapter[adapter.index("NTSTATUS NTAPI RpStart"):adapter.index("NTSTATUS NTAPI RpStop")]
+assert "KeQueryPerformanceCounter(&qpcFrequency)" in start
+assert "a->QpcFrequency = qpcFrequency.QuadPart;" in start
+
+# The phase tracer must be TraceLogging-only: do not call RP_LOG/DbgPrint on
+# every Present. Entry/lock/shadow/flush phases make a blocked call observable.
+trace = Path("driver/trace.c").read_text(encoding="utf-8")
+assert "VOID RpTracePresentPhase" in trace
+phase = trace[trace.index("VOID RpTracePresentPhase"):]
+assert 'TraceLoggingWrite(' in phase
+assert 'DbgPrintEx' not in phase
+assert 'RP_LOG(' not in phase
+assert "RpPresentPhaseEntry" in present
+assert "RpPresentPhaseLocked" in present
+assert "RpPresentPhaseShadowDone" in present
+assert "RpPresentPhaseFlushDone" in present
+assert "PresentEntered" in present
+assert "PresentCompleted" in present
+
 # Successful Windows VSync-control chatter must not write dozens of registry
 # values on every enable/disable transition. Preserve first/failure evidence
 # plus a periodic snapshot instead.
@@ -65,4 +86,4 @@ assert "DxgkCbNotifyInterrupt" in isr
 assert "DxgkCbQueueDpc" in isr
 assert "DxgkCbNotifyDpc" in adapter
 
-print("PASS: 0.1.17 retains bulk shadow/framebuffer copies and hot-path profiling")
+print("PASS: 0.1.18 has independent QPC and trace-only Present phase diagnostics")
