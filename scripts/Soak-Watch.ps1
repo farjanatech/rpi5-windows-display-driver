@@ -183,79 +183,118 @@ $problemCode=$null
 $deviceStatus=$null
 $sampleIndex=0
 
+$sessionClock=[Diagnostics.Stopwatch]::StartNew()
+$errorLog=Join-Path $root ('recorder-error-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.txt')
 try {
     while ($true) {
         $started=Get-Date
-        $core=$null
-        $disk=$null
-        try { $core=(Get-Counter -Counter $coreCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {}
-        try { $disk=(Get-Counter -Counter $diskCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {}
+        try {
+            $core=$null
+            $disk=$null
+            try { $core=(Get-Counter -Counter $coreCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {
+                "[$([DateTime]::UtcNow.ToString('o'))] Get-Counter core: $($_.Exception.Message)" |
+                    Add-Content -LiteralPath $errorLog -Encoding utf8
+            }
+            try { $disk=(Get-Counter -Counter $diskCounters -MaxSamples 1 -ErrorAction Stop).CounterSamples } catch {
+                "[$([DateTime]::UtcNow.ToString('o'))] Get-Counter disk: $($_.Exception.Message)" |
+                    Add-Content -LiteralPath $errorLog -Encoding utf8
+            }
 
-        if (($sampleIndex % 6) -eq 0) {
-            try {
-                $cpu=Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-                $cpuClock=$cpu.CurrentClockSpeed
-                $cpuMax=$cpu.MaxClockSpeed
-                $cpuLoad=$cpu.LoadPercentage
-            } catch {}
-            try {
-                $dev=Get-PnpDevice -PresentOnly -ErrorAction Stop |
-                    Where-Object { $_.InstanceId -like 'ACPI\BCM2712\*' } |
-                    Select-Object -First 1
-                if ($dev) {
-                    $deviceStatus=$dev.Status
-                    $props=@(Get-PnpDeviceProperty -InstanceId $dev.InstanceId -ErrorAction Stop)
-                    $driverProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_DriverVersion' | Select-Object -First 1
-                    $problemProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_ProblemCode' | Select-Object -First 1
-                    if ($driverProperty) { $driverVersion=$driverProperty.Data }
-                    if ($problemProperty) { $problemCode=$problemProperty.Data }
+            if (($sampleIndex % 6) -eq 0) {
+                try {
+                    $cpu=Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+                    $cpuClock=$cpu.CurrentClockSpeed
+                    $cpuMax=$cpu.MaxClockSpeed
+                    $cpuLoad=$cpu.LoadPercentage
+                } catch {
+                    "[$([DateTime]::UtcNow.ToString('o'))] CPU CIM: $($_.Exception.Message)" |
+                        Add-Content -LiteralPath $errorLog -Encoding utf8
                 }
-            } catch {}
+                try {
+                    $dev=Get-PnpDevice -PresentOnly -ErrorAction Stop |
+                        Where-Object { $_.InstanceId -like 'ACPI\BCM2712\*' } |
+                        Select-Object -First 1
+                    if ($dev) {
+                        $deviceStatus=$dev.Status
+                        $props=@(Get-PnpDeviceProperty -InstanceId $dev.InstanceId -ErrorAction Stop)
+                        $driverProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_DriverVersion' | Select-Object -First 1
+                        $problemProperty=$props | Where-Object KeyName -eq 'DEVPKEY_Device_ProblemCode' | Select-Object -First 1
+                        if ($driverProperty) { $driverVersion=$driverProperty.Data }
+                        if ($problemProperty) { $problemCode=$problemProperty.Data }
+                    }
+                } catch {
+                    "[$([DateTime]::UtcNow.ToString('o'))] PnP query: $($_.Exception.Message)" |
+                        Add-Content -LiteralPath $errorLog -Encoding utf8
+                }
+            }
+
+            $empty=[ordered]@{CpuSeconds=$null; WorkingSetBytes=$null; PrivateBytes=$null; Handles=$null; Threads=$null}
+            try { $dwm=Get-ProcessSummary 'dwm' } catch {
+                $dwm=$empty
+                "[$([DateTime]::UtcNow.ToString('o'))] DWM query: $($_.Exception.Message)" |
+                    Add-Content -LiteralPath $errorLog -Encoding utf8
+            }
+            try { $system=Get-ProcessSummary 'System' } catch {
+                $system=$empty
+                "[$([DateTime]::UtcNow.ToString('o'))] System query: $($_.Exception.Message)" |
+                    Add-Content -LiteralPath $errorLog -Encoding utf8
+            }
+
+            $row=[pscustomobject][ordered]@{
+                TimestampUtc=[DateTime]::UtcNow.ToString('o')
+                RecorderElapsedSeconds=[math]::Round($sessionClock.Elapsed.TotalSeconds,1)
+                CpuPercent=(Get-CounterValue $core '\processor(_total)\% processor time')
+                DpcPercent=(Get-CounterValue $core '\processor(_total)\% dpc time')
+                InterruptPercent=(Get-CounterValue $core '\processor(_total)\% interrupt time')
+                ProcessorQueue=(Get-CounterValue $core '\system\processor queue length')
+                AvailableMB=(Get-CounterValue $core '\memory\available mbytes')
+                NonpagedPoolBytes=(Get-CounterValue $core '\memory\pool nonpaged bytes')
+                PagedPoolBytes=(Get-CounterValue $core '\memory\pool paged bytes')
+                DiskLatencySeconds=(Get-CounterValue $disk '\physicaldisk(_total)\avg. disk sec/transfer')
+                DiskQueue=(Get-CounterValue $disk '\physicaldisk(_total)\current disk queue length')
+                CpuClockMHz=$cpuClock
+                CpuMaxMHz=$cpuMax
+                CpuLoadPercent=$cpuLoad
+                DwmCpuSeconds=$dwm.CpuSeconds
+                DwmWorkingSetBytes=$dwm.WorkingSetBytes
+                DwmPrivateBytes=$dwm.PrivateBytes
+                DwmHandles=$dwm.Handles
+                DwmThreads=$dwm.Threads
+                SystemCpuSeconds=$system.CpuSeconds
+                SystemWorkingSetBytes=$system.WorkingSetBytes
+                SystemPrivateBytes=$system.PrivateBytes
+                SystemHandles=$system.Handles
+                SystemThreads=$system.Threads
+                DriverVersion=$driverVersion
+                ProblemCode=$problemCode
+                DeviceStatus=$deviceStatus
+            }
+
+            if (!(Test-Path -LiteralPath $metrics)) {
+                $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8
+            } else {
+                $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8 -Append
+            }
+            ++$sampleIndex
+
+            if (($sampleIndex % 6) -eq 0) {
+                Write-Host ("Recorder alive: {0} samples, {1:n0}s" -f $sampleIndex,$sessionClock.Elapsed.TotalSeconds)
+            }
+        } catch {
+            "[$([DateTime]::UtcNow.ToString('o'))] SAMPLE ERROR: $($_ | Out-String)" |
+                Add-Content -LiteralPath $errorLog -Encoding utf8
+            Write-Warning "Sample failed but recorder will continue: $($_.Exception.Message)"
         }
 
-        $dwm=Get-ProcessSummary 'dwm'
-        $system=Get-ProcessSummary 'System'
-        $row=[pscustomobject][ordered]@{
-            TimestampUtc=[DateTime]::UtcNow.ToString('o')
-            UptimeSeconds=[math]::Round([Environment]::TickCount64/1000.0,1)
-            CpuPercent=(Get-CounterValue $core '\processor(_total)\% processor time')
-            DpcPercent=(Get-CounterValue $core '\processor(_total)\% dpc time')
-            InterruptPercent=(Get-CounterValue $core '\processor(_total)\% interrupt time')
-            ProcessorQueue=(Get-CounterValue $core '\system\processor queue length')
-            AvailableMB=(Get-CounterValue $core '\memory\available mbytes')
-            NonpagedPoolBytes=(Get-CounterValue $core '\memory\pool nonpaged bytes')
-            PagedPoolBytes=(Get-CounterValue $core '\memory\pool paged bytes')
-            DiskLatencySeconds=(Get-CounterValue $disk '\physicaldisk(_total)\avg. disk sec/transfer')
-            DiskQueue=(Get-CounterValue $disk '\physicaldisk(_total)\current disk queue length')
-            CpuClockMHz=$cpuClock
-            CpuMaxMHz=$cpuMax
-            CpuLoadPercent=$cpuLoad
-            DwmCpuSeconds=$dwm.CpuSeconds
-            DwmWorkingSetBytes=$dwm.WorkingSetBytes
-            DwmPrivateBytes=$dwm.PrivateBytes
-            DwmHandles=$dwm.Handles
-            DwmThreads=$dwm.Threads
-            SystemCpuSeconds=$system.CpuSeconds
-            SystemWorkingSetBytes=$system.WorkingSetBytes
-            SystemPrivateBytes=$system.PrivateBytes
-            SystemHandles=$system.Handles
-            SystemThreads=$system.Threads
-            DriverVersion=$driverVersion
-            ProblemCode=$problemCode
-            DeviceStatus=$deviceStatus
-        }
-
-        if (!(Test-Path -LiteralPath $metrics)) {
-            $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8
-        } else {
-            $row | Export-Csv -LiteralPath $metrics -NoTypeInformation -Encoding UTF8 -Append
-        }
-
-        ++$sampleIndex
         $elapsed=((Get-Date)-$started).TotalSeconds
         $sleep=[math]::Max(1,$IntervalSeconds-[int][math]::Ceiling($elapsed))
         Start-Sleep -Seconds $sleep
     }
+} catch {
+    "[$([DateTime]::UtcNow.ToString('o'))] FATAL RECORDER ERROR: $($_ | Out-String)" |
+        Add-Content -LiteralPath $errorLog -Encoding utf8
+    Write-Host "FATAL RECORDER ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 } finally {
     if ($traceActive) {
         Invoke-TextCommand "$env:SystemRoot\System32\logman.exe" @('stop',$traceName,'-ets') (Join-Path $directory 'trace-stop.txt') | Out-Null
