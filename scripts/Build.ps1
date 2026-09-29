@@ -115,7 +115,7 @@ try {
         Test-LabManifest -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint | Out-Null
         & (Join-Path $Root 'tests/Package.Tests.ps1') -ArtifactRoot $Out -ExpectedCommit $sourceCommit -ExpectedThumbprint $cert.Thumbprint
     }
-    foreach ($helper in @('Lab-Common.ps1','Collect-Platform.ps1','Install-Lab.ps1','Remove-Lab.ps1','Diagnostics.ps1','Run-Lab.ps1','Install.cmd','Preflight.cmd','Collect-Logs.cmd','Uninstall.cmd')) {
+    foreach ($helper in @('Lab-Common.ps1','Collect-Platform.ps1','Install-Lab.ps1','Remove-Lab.ps1','Diagnostics.ps1','Run-Lab.ps1','Install.cmd','Preflight.cmd','Collect-Logs.cmd','Uninstall.cmd','Soak-Watch.ps1','Start-Soak-Watch.cmd','Recover-Soak-Watch.cmd')) {
         Copy-Item (Join-Path $PSScriptRoot $helper) $Out -Force
     }
     if ($TestSign) {

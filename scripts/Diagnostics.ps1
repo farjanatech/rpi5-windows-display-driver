@@ -172,7 +172,18 @@ function Save-PreviousLabEvidence {
                 Assert-LabNoReparseAncestors $session.FullName
                 $to=Join-Path $destination ($category+'-'+$session.Name)
                 New-Item -ItemType Directory -Path $to | Out-Null
-                foreach ($file in @(Get-ChildItem -LiteralPath $session.FullName -File | Where-Object { $_.Name -match '^(session\.log|error\.txt|result\.json|install-state\.json|install-result\.json|commands\.jsonl|driver.*\.etl)$' })) {
+                foreach ($file in @(Get-ChildItem -LiteralPath $session.FullName -File | Where-Object { $_.Name -match '^(session\.log|error\.txt|result\.json|install-state\.json|install-result\.json|commands\.jsonl|driver.*\.etl|driver-events\.xml|metrics\.csv|soak-status\.json|soak-info\.txt|trace-name\.txt) })) {
+                    Assert-LabNoReparseAncestors $file.FullName
+                    if ($file.Length -le $remaining) {
+                        Copy-Item -LiteralPath $file.FullName -Destination $to -ErrorAction Stop
+                        $remaining-=$file.Length
+                    }
+                }
+            } catch { Write-Warning "Previous-session collection incomplete: $_" }
+        }
+    }
+}
+ })) {
                     Assert-LabNoReparseAncestors $file.FullName
                     if ($file.Length -le $remaining) {
                         Copy-Item -LiteralPath $file.FullName -Destination $to -ErrorAction Stop
