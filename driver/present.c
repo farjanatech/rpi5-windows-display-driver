@@ -110,7 +110,14 @@ NTSTATUS APIENTRY RpPresent(CONST HANDLE context, CONST DXGKARG_PRESENT_DISPLAYO
     src.pitch = (ULONG)p->Pitch;
     if (!rp_layout(src.width, src.height, src.pitch, &src.size)) {
         result = STATUS_INVALID_PARAMETER;
-        goto done;
+        now = KeQueryPerformanceCounter(NULL);
+        elapsedUs = RpPresentElapsedUs(a, begin, now);
+        RpTracePresentPhase(
+            presentId, RpPresentPhaseExitError, elapsedUs, 0,
+            p->NumMoves, p->NumDirtyRects, a->Visible ? 1u : 0u,
+            (ULONG)result);
+        RpLeave(a);
+        return result;
     }
 
     full.left = full.top = 0;
