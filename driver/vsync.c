@@ -419,7 +419,10 @@ static BOOLEAN RpSetVSyncSynchronized(PVOID context)
          */
         InterlockedExchange64(&a->LastVSyncQpc, control->ProvisionalQpc);
         InterlockedExchange(&a->VSyncPhaseSource, RP_VSYNC_PHASE_PROVISIONAL);
-        InterlockedExchange(&a->VSyncAnchorReported, 0);
+        /*
+         * VSyncAnchorReported is a per-session one-shot diagnostic latch.
+         * Re-enabling VSync must not re-arm registry/log persistence.
+         */
         WRITE_REGISTER_ULONG((PULONG)RpPvRegister(a, RP_PV_INTSTAT),
                              RP_PV_INT_VFP_START);
         InterlockedExchange(&a->VSyncInterruptEnabled, 1);
@@ -725,7 +728,11 @@ BOOLEAN NTAPI RpInterrupt(PVOID context, ULONG messageNumber)
      */
     InterlockedExchange64(&a->LastVSyncQpc, now.QuadPart);
     InterlockedExchange(&a->VSyncPhaseSource, RP_VSYNC_PHASE_HARDWARE);
-    InterlockedExchange(&a->VSyncAnchorReported, 0);
+    /*
+     * Do not reset VSyncAnchorReported here. RpGetScanLine consumes it as a
+     * one-shot diagnostic latch. Re-arming it on every ~60 Hz VFP edge turns
+     * GetScanLine into continuous registry I/O and ETW/debug logging.
+     */
     InterlockedIncrement64(&a->VSyncCount);
 
     RtlZeroMemory(&notify, sizeof(notify));
