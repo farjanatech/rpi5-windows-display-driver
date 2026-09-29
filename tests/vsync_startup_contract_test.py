@@ -1,74 +1,82 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Static regression for the 0.1.17 simulated-VSync A/B KMDOD contract."""
+"""Static regression for the 0.1.16 KMDOD VSync-control contract."""
 
 from pathlib import Path
 
-adapter = Path("driver/adapter.c").read_text(encoding="utf-8")
-vsync = Path("driver/vsync.c").read_text(encoding="utf-8")
-modes = Path("driver/modes.c").read_text(encoding="utf-8")
+source = Path("driver/vsync.c").read_text(encoding="utf-8")
 header = Path("driver/display.h").read_text(encoding="utf-8")
 inf = Path("package/Rpi5Display.inf").read_text(encoding="utf-8")
-registration = Path("core/registration_contract.h").read_text(encoding="utf-8")
 
-assert 'RP_DRIVER_VERSION "0.1.17-ab-simulated-vsync"' in header
-assert "#define RP_WINDOWS_VSYNC_MODE_SIMULATED 1u" in header
-assert "DriverVer=09/29/2026,0.1.17.0" in inf
+assert 'RP_DRIVER_VERSION "0.1.16-longrun-anchor-copy"' in header
+assert "DriverVer=09/29/2026,0.1.16.0" in inf
 
-# Hardware VSync code stays compiled for the controlled A/B experiment.
-assert "NTSTATUS RpVSyncInitialize" in vsync
-assert "NTSTATUS APIENTRY RpControlInterrupt" in vsync
-assert "NTSTATUS APIENTRY RpGetScanLine" in vsync
-assert "BOOLEAN NTAPI RpInterrupt" in vsync
-assert "DXGK_INTERRUPT_DISPLAYONLY_VSYNC" in vsync
+assert "RP_VSYNC_PHASE_PROVISIONAL" in source
+assert "RP_VSYNC_PHASE_HARDWARE" in source
+assert "seed = KeQueryPerformanceCounter(&frequency);" in source
+assert "VSyncProvisionalScanLineQueries" in source
 
-# This build must not bind the optional VSync callback pair.
-driver_entry = adapter[
-    adapter.index("NTSTATUS NTAPI DriverEntry"):
-    adapter.index("NTSTATUS NTAPI RpAdd")
-]
-assert "gRpVSyncHardwareAvailable = RpVSyncRegistrationAvailable();" in driver_entry
-assert "gRpVSyncRegistrationEnabled = FALSE;" in driver_entry
-assert "RP_BIND_VSYNC_CALLBACK" not in driver_entry
-assert "RP_DOD_VSYNC_CALLBACK_BINDINGS(RP_BIND_VSYNC_CALLBACK)" not in driver_entry
+# A provisional timing phase must exist before the first hardware IRQ.
+init = source.index("NTSTATUS RpVSyncInitialize")
+control_struct = source.index("typedef struct RP_VSYNC_CONTROL_CONTEXT")
+init_block = source[init:control_struct]
+assert "RP_VSYNC_PHASE_PROVISIONAL" in init_block
+assert 'L"Rpi5DisplayVSyncProvisionalPhaseReady", 1' in init_block
 
-# InterruptRoutine/DpcRoutine remain in the base KMDOD callback table, matching
-# Microsoft's KMDOD pattern when ControlInterrupt/GetScanLine are omitted.
-assert "X(DxgkDdiInterruptRoutine, RpInterrupt)" in registration
-assert "X(DxgkDdiDpcRoutine, RpDpc)" in registration
+# Enabling must publish the software-enabled state before PV_INTEN is unmasked,
+# eliminating the 0.1.11 first-edge race.
+setter = source.index("static BOOLEAN RpSetVSyncSynchronized")
+shutdown = source.index("VOID RpVSyncShutdown")
+setter_block = source[setter:shutdown]
+enable = setter_block.index("if (control->Enable)")
+enable_block = setter_block[enable:setter_block.index("} else {", enable)]
+flag_pos = enable_block.index("InterlockedExchange(&a->VSyncInterruptEnabled, 1);")
+inten_pos = enable_block.index("enable | RP_PV_INT_VFP_START")
+assert flag_pos < inten_pos
 
-# StartDevice must only initialize PixelValve VSync when it was advertised.
-start = adapter[
-    adapter.index("NTSTATUS NTAPI RpStart"):
-    adapter.index("NTSTATUS NTAPI RpStop")
-]
-assert "if (a->VSyncAdvertised)" in start
-assert "RpVSyncInitialize" in start
-assert 'L"Rpi5DisplayWindowsVSyncMode"' in adapter
-assert 'L"Rpi5DisplayVSyncHardwareAvailable"' in adapter
-
-# Windows requires unspecified signal frequency fields when KMDOD VSync control
-# is not supported. The real-timing path is gated by VSyncAdvertised.
-signal = modes[
-    modes.index("static VOID RpSignal"):
-    modes.index("static BOOLEAN RpSourceValid")
-]
-assert "a->VSyncAdvertised && a->FirmwareTimingValid && a->VSyncHardwareReady" in signal
-assert "s->PixelRate = D3DKMDT_FREQUENCY_NOTSPECIFIED;" in signal
-assert "s->VSyncFreq.Numerator = s->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;" in signal
-assert "s->HSyncFreq.Numerator = s->HSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;" in signal
-
-# Preserve the 0.1.16 one-shot anchor cleanup in the dormant hardware path.
+# VSyncAnchorReported is a per-session one-shot diagnostic latch. It may be
+# initialized once, but neither routine VSync re-enable nor the 60 Hz ISR may
+# re-arm it and turn GetScanLine into recurring registry/log I/O.
 anchor_reset = "InterlockedExchange(&a->VSyncAnchorReported, 0);"
-init = vsync.index("NTSTATUS RpVSyncInitialize")
-control_struct = vsync.index("typedef struct RP_VSYNC_CONTROL_CONTEXT")
-init_block = vsync[init:control_struct]
-setter = vsync.index("static BOOLEAN RpSetVSyncSynchronized")
-shutdown = vsync.index("VOID RpVSyncShutdown")
-setter_block = vsync[setter:shutdown]
-isr = vsync[vsync.index("BOOLEAN NTAPI RpInterrupt"):]
 assert init_block.count(anchor_reset) == 1
 assert anchor_reset not in setter_block
-assert anchor_reset not in isr
+isr_start = source.index("BOOLEAN NTAPI RpInterrupt")
+assert anchor_reset not in source[isr_start:]
 
-print("PASS: 0.1.17 omits KMDOD VSync control and forces Windows simulated timing")
+# Windows 11's KMDOD path was observed requesting DISPLAYONLY_VSYNC (5) in
+# ControlInterrupt. Accept both the generic CRTC value and the KMDOD value.
+control = source.index("NTSTATUS APIENTRY RpControlInterrupt")
+scan = source.index("NTSTATUS APIENTRY RpGetScanLine")
+control_block = source[control:scan]
+assert "interruptType != DXGK_INTERRUPT_CRTC_VSYNC &&" in control_block
+assert "interruptType != DXGK_INTERRUPT_DISPLAYONLY_VSYNC" in control_block
+assert "ControlInterrupt VSYNC type=%u" in control_block
+
+# STATUS_UNSUCCESSFUL from DxgkCbSynchronizeExecution gets the documented
+# interrupt-not-connected-yet fallback, while the result is persisted.
+assert "synchronizeStatus == STATUS_UNSUCCESSFUL" in control_block
+assert "usedDirectFallback = TRUE;" in control_block
+assert "applied = RpSetVSyncSynchronized(&control);" in control_block
+assert "RpRecordControlInterruptResult" in control_block
+assert "Rpi5DisplayVSyncLastControlPvInten" in source
+assert "Rpi5DisplayVSyncLastEnableType" in source
+assert "Rpi5DisplayVSyncLastEnablePvInten" in source
+assert "Rpi5DisplayVSyncLastDisableType" in source
+
+# GetScanLine accepts provisional phase, but only a real ISR upgrades it to
+# a hardware anchor reported to dxgkrnl.
+scan_block = source[scan:source.index("BOOLEAN NTAPI RpInterrupt")]
+assert "RP_VSYNC_PHASE_PROVISIONAL" in scan_block
+assert "Rpi5DisplayVSyncProvisionalPhaseUsed" in scan_block
+isr = source[source.index("BOOLEAN NTAPI RpInterrupt"):]
+assert "RP_VSYNC_PHASE_HARDWARE" in isr
+count_pos = isr.index("InterlockedIncrement64(&a->VSyncCount);")
+notify_pos = isr.index("DxgkCbNotifyInterrupt")
+assert count_pos < notify_pos
+
+# StopDevice must retain anchor/counter evidence rather than overwrite it.
+shutdown_block = source[shutdown:control]
+assert 'L"Rpi5DisplayVSyncAnchorReady", 0' not in shutdown_block
+assert "Rpi5DisplayVSyncInterruptEnabledBeforeStop" in shutdown_block
+
+print("PASS: 0.1.16 preserves KMDOD VSync and keeps anchor diagnostics one-shot")
