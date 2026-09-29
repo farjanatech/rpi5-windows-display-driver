@@ -340,7 +340,14 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     NTSTATUS st;
     size_t bytes;
     ULONG mapMode = 0;
+    LARGE_INTEGER qpcFrequency;
+    LARGE_INTEGER qpcSeed;
     if (!a || !start || !iface || !sources || !children) return STATUS_INVALID_PARAMETER;
+    qpcSeed = KeQueryPerformanceCounter(&qpcFrequency);
+    if (qpcSeed.QuadPart <= 0 || qpcFrequency.QuadPart <= 0) {
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    a->QpcFrequency = qpcFrequency.QuadPart;
     *sources = *children = 0;
     RpRecordStartState(a, RpStartEntered, STATUS_PENDING, NULL, 0);
     RP_LOG("StartDevice begin; interface version=0x%08lx size=%lu\n", iface->Version, iface->Size);
@@ -448,6 +455,8 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     a->Visible = TRUE; a->NeedFull = TRUE;
     a->AdapterPower = a->MonitorPower = PowerDeviceD0;
     RpResetPowerDiagnostics(a);
+    InterlockedExchange64(&a->PresentEntered, 0);
+    InterlockedExchange64(&a->PresentCompleted, 0);
     a->Presents = 0;
     a->PresentMaxUs = 0;
     a->PresentOver16ms = 0;
@@ -460,9 +469,9 @@ NTSTATUS NTAPI RpStart(PVOID context, PDXGK_START_INFO start, PDXGKRNL_INTERFACE
     InterlockedExchange(&a->Active, 1);
     *sources = *children = 1;
     RpRecordStartState(a, RpStartCompleted, STATUS_SUCCESS, &a->Display, mapMode);
-    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu vsync=%u pv=%lu; no mode programming\n",
+    RP_LOG("started %lux%lu pitch=%lu mapMode=%lu vsync=%u pv=%lu qpcHz=%lld; no mode programming\n",
         a->Display.Width, a->Display.Height, a->Display.Pitch, mapMode,
-        a->VSyncHardwareReady, a->PixelValveIndex);
+        a->VSyncHardwareReady, a->PixelValveIndex, a->QpcFrequency);
     return STATUS_SUCCESS;
 }
 NTSTATUS NTAPI RpStop(PVOID context)
@@ -477,8 +486,11 @@ NTSTATUS NTAPI RpStop(PVOID context)
     if (a->Framebuffer) { MmUnmapIoSpace(a->Framebuffer, a->FramebufferBytes); a->Framebuffer = NULL; }
     if (a->Shadow.data) { ExFreePoolWithTag(a->Shadow.data, RP_POOL_TAG); a->Shadow.data = NULL; }
     a->FramebufferBytes = 0;
-    RP_LOG("stopped after %llu presentations maxPresentUs=%llu maxPixels=%llu totalPixels=%llu over16ms=%llu over33ms=%llu over50ms=%llu\n",
-        a->Presents, a->PresentMaxUs, a->PresentMaxPixels,
+    RP_LOG("stopped after %llu presentations entered=%lld completed=%lld maxPresentUs=%llu maxPixels=%llu totalPixels=%llu over16ms=%llu over33ms=%llu over50ms=%llu\n",
+        a->Presents,
+        InterlockedCompareExchange64(&a->PresentEntered, 0, 0),
+        InterlockedCompareExchange64(&a->PresentCompleted, 0, 0),
+        a->PresentMaxUs, a->PresentMaxPixels,
         a->PresentTotalPixels, a->PresentOver16ms,
         a->PresentOver33ms, a->PresentOver50ms);
     return STATUS_SUCCESS;
